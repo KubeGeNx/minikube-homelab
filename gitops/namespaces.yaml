@@ -66,6 +66,11 @@ kind: Namespace
 metadata:
   name: velero
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent
+---
 # Kubeflow's own kustomize bundle creates several more namespaces beyond
 # this one (knative-serving, kserve, auth, etc.) as part of its manifests --
 # this entry is just the primary one. A full Kubeflow teardown may need:

@@ -14,10 +14,10 @@
 .DEFAULT_GOAL := help
 
 HELM_COMPONENTS := cert-manager metallb external-secrets envoy-gateway \
-  kube-prometheus-stack loki-stack tempo alloy minio velero
+  kube-prometheus-stack loki-stack tempo alloy minio velero kagent
 SPECIAL_COMPONENTS := olm kubeflow
 
-.PHONY: help bootstrap prereqs cluster crds argocd base apply gateway hosts \
+.PHONY: help bootstrap prereqs cluster crds argocd base apply gateway tunnel hosts \
   update-versions status clean destroy $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS)
 
 help:
@@ -27,6 +27,7 @@ help:
 	@echo "  apply                rebuild + apply the ApplicationSet as-is"
 	@echo "  gateway              (re)apply TLS Gateway + HTTPRoutes"
 	@echo "  update-versions      pin every component to its latest release, then apply"
+	@echo "  tunnel               minikube tunnel for the homelab profile"
 	@echo "  hosts                /etc/hosts entries for *.lab.local"
 	@echo "  status | clean | destroy"
 	@echo ""
@@ -68,6 +69,10 @@ $(HELM_COMPONENTS): base
 
 $(SPECIAL_COMPONENTS): base
 	bash scripts/enable-component.sh $@
+
+# minikube commands default to the "minikube" profile; this cluster is "homelab".
+tunnel:
+	minikube tunnel -p $${MINIKUBE_PROFILE:-homelab}
 
 hosts:
 	@GATEWAY_IP=$$(kubectl -n envoy-gateway-system get gateway platform -o jsonpath='{.status.addresses[0].value}' 2>/dev/null); \

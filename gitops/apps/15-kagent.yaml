@@ -1,0 +1,44 @@
+# kagent (kagent.dev): Kubernetes-native AI agent framework. Needs an LLM
+# provider API key -- run ./scripts/09-kagent-secret.sh (creates the
+# kagent-model-provider secret) before/right after enabling. kagent is a
+# fast-moving project: confirm the exact Helm value that wires the secret
+# into the chart against `helm show values` for the pinned KAGENT_VERSION
+# (see the commented block below) -- field names have changed between
+# releases.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://kagent-dev.github.io/kagent
+    chart: kagent
+    targetRevision: ${KAGENT_VERSION}
+    helm:
+      releaseName: kagent
+      values: |
+        # Wire the LLM provider key from the kagent-model-provider secret
+        # (scripts/09-kagent-secret.sh). Verify the field name for your
+        # pinned version:
+        #   helm repo add kagent https://kagent-dev.github.io/kagent
+        #   helm show values kagent/kagent --version <KAGENT_VERSION>
+        # providers:
+        #   openAI:
+        #     apiKeySecretRef: kagent-model-provider
+        #     apiKeySecretKey: OPENAI_API_KEY
+        {}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

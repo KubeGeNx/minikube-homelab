@@ -49,6 +49,7 @@ ARGOCD_CHART_VERSION|helm|argo|https://argoproj.github.io/argo-helm|argo-cd
 ENVOY_GATEWAY_VERSION|ghrelease|-|-|envoyproxy/gateway
 GATEWAY_API_VERSION|ghrelease|-|-|kubernetes-sigs/gateway-api
 SNAPSHOTTER_VERSION|ghrelease|-|-|kubernetes-csi/external-snapshotter
+KAGENT_VERSION|helm|kagent|https://kagent-dev.github.io/kagent|kagent
 OLM_VERSION|ghrelease|-|-|operator-framework/operator-lifecycle-manager
 '
 

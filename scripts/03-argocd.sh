@@ -28,6 +28,28 @@ helm upgrade --install argocd argo/argo-cd \
 echo "Waiting for argocd-server rollout..."
 kubectl -n "$NAMESPACE" rollout status deployment/argocd-server --timeout=300s
 
+# Register Docker Hub's envoyproxy org as a Helm OCI repository. Without
+# this, Argo CD resolves oci://docker.io/envoyproxy + chart gateway-helm
+# incorrectly (queries /v2/envoyproxy/manifests/<tag> -> 401) because
+# anonymous OCI against Docker Hub needs the repo declared with enableOCI
+# so the token handshake + chart-path composition go through Argo's Helm
+# OCI client.
+echo "Registering oci://docker.io/envoyproxy as a Helm OCI repository..."
+kubectl apply -f - <<'REPOEOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-envoyproxy-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: envoyproxy-oci
+  type: helm
+  url: docker.io/envoyproxy
+  enableOCI: "true"
+REPOEOF
+
 echo "Argo CD installed."
 echo "Admin password:"
 echo "  kubectl -n $NAMESPACE get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"

@@ -10,10 +10,12 @@ metadata:
 spec:
   project: default
   source:
-    # OCI charts: Argo CD appends `chart` to repoURL, so repoURL is the
-    # registry NAMESPACE only ("oci://docker.io/envoyproxy/gateway-helm" +
-    # chart would double up to .../gateway-helm/gateway-helm and 404).
-    repoURL: oci://docker.io/envoyproxy
+    # OCI chart. docker.io/envoyproxy is registered as a Helm OCI
+    # repository by scripts/03-argocd.sh (secret repo-envoyproxy-oci,
+    # enableOCI) -- the repoURL here must match that registration exactly,
+    # i.e. NO oci:// scheme and the registry namespace only (Argo CD
+    # appends `chart` to it).
+    repoURL: docker.io/envoyproxy
     chart: gateway-helm
     targetRevision: ${ENVOY_GATEWAY_VERSION}
     helm:

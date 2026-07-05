@@ -20,10 +20,14 @@ case "$ACTION" in
     else
       echo "Installing OLM ${OLM_VERSION}..."
     fi
-    # Server-side apply: OLM's CRDs exceed the client-side annotation size limit.
-    kubectl apply --server-side -f "${BASE}/crds.yaml"
+    # Server-side apply: OLM's CRDs exceed the client-side annotation size
+    # limit. --force-conflicts: on re-runs (or after OLM's own controllers
+    # touched fields) another field manager owns parts of these objects and
+    # a plain SSA fails with a conflict -- forcing is correct here because
+    # the release manifests are the desired state.
+    kubectl apply --server-side --force-conflicts -f "${BASE}/crds.yaml"
     kubectl wait --for=condition=Established crd/clusterserviceversions.operators.coreos.com --timeout=120s
-    kubectl apply --server-side -f "${BASE}/olm.yaml"
+    kubectl apply --server-side --force-conflicts -f "${BASE}/olm.yaml"
     echo "Waiting for OLM deployments..."
     kubectl -n olm rollout status deployment/olm-operator --timeout=300s
     kubectl -n olm rollout status deployment/catalog-operator --timeout=300s
