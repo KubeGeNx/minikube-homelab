@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki-stack
+    targetRevision: ${LOKI_STACK_VERSION}
+    helm:
+      releaseName: loki-stack
+      values: |
+        grafana:
+          enabled: false
+        prometheus:
+          enabled: false
+        # promtail disabled: Grafana Alloy (gitops/apps/05-alloy.yaml) ships
+        # pod logs to Loki. If you disable Alloy, flip this back to true.
+        promtail:
+          enabled: false
+        loki:
+          persistence:
+            enabled: true
+            storageClassName: standard
+            size: 10Gi
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

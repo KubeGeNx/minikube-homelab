@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: envoy-gateway
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    # OCI charts: Argo CD appends `chart` to repoURL, so repoURL is the
+    # registry NAMESPACE only ("oci://docker.io/envoyproxy/gateway-helm" +
+    # chart would double up to .../gateway-helm/gateway-helm and 404).
+    repoURL: oci://docker.io/envoyproxy
+    chart: gateway-helm
+    targetRevision: ${ENVOY_GATEWAY_VERSION}
+    helm:
+      releaseName: eg
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: envoy-gateway-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,117 @@
+# Grafana Alloy: unified collector. Ships pod logs -> Loki, scrapes
+# prometheus.io/scrape-annotated pods -> Prometheus (remote-write receiver
+# enabled in 08-kube-prometheus-stack.yaml), and receives OTLP traces ->
+# Tempo. Runs as a single-replica StatefulSet (not a DaemonSet) so
+# loki.source.kubernetes doesn't tail every pod once per node.
+# NOTE: loki-stack's promtail is disabled (11-loki-stack.yaml) because
+# Alloy owns log shipping -- if you disable Alloy, re-enable promtail.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: alloy
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: alloy
+    targetRevision: ${ALLOY_CHART_VERSION}
+    helm:
+      releaseName: alloy
+      values: |
+        controller:
+          type: statefulset
+          replicas: 1
+        alloy:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+          extraPorts:
+            - name: otlp-grpc
+              port: 4317
+              targetPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              port: 4318
+              targetPort: 4318
+              protocol: TCP
+          configMap:
+            content: |
+              // ---- Logs: all pod logs -> Loki ----
+              discovery.kubernetes "pods" {
+                role = "pod"
+              }
+
+              loki.source.kubernetes "pods" {
+                targets    = discovery.kubernetes.pods.targets
+                forward_to = [loki.write.default.receiver]
+              }
+
+              loki.write "default" {
+                endpoint {
+                  url = "http://loki-stack.logging.svc:3100/loki/api/v1/push"
+                }
+              }
+
+              // ---- Metrics: annotated pods -> Prometheus remote-write ----
+              discovery.relabel "scrape_pods" {
+                targets = discovery.kubernetes.pods.targets
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+                  regex         = "true"
+                  action        = "keep"
+                }
+              }
+
+              prometheus.scrape "pods" {
+                targets    = discovery.relabel.scrape_pods.output
+                forward_to = [prometheus.remote_write.default.receiver]
+              }
+
+              prometheus.remote_write "default" {
+                endpoint {
+                  url = "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/write"
+                }
+              }
+
+              // ---- Traces: OTLP in -> Tempo ----
+              otelcol.receiver.otlp "default" {
+                grpc {
+                  endpoint = "0.0.0.0:4317"
+                }
+                http {
+                  endpoint = "0.0.0.0:4318"
+                }
+                output {
+                  traces = [otelcol.processor.batch.default.input]
+                }
+              }
+
+              otelcol.processor.batch "default" {
+                output {
+                  traces = [otelcol.exporter.otlp.tempo.input]
+                }
+              }
+
+              otelcol.exporter.otlp "tempo" {
+                client {
+                  endpoint = "tempo.tracing.svc:4317"
+                  tls {
+                    insecure = true
+                  }
+                }
+              }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: alloy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

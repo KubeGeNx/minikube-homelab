@@ -1,0 +1,57 @@
+# RECOMMENDED once you have a git remote: let an actual Argo CD Application
+# (this one) own which components exist, instead of the bash prune loop in
+# scripts/04-apply-apps.sh.
+#
+# This Application watches gitops/rendered/ -- the directory
+# scripts/render-apps.sh writes to, containing one Application manifest per
+# component that's *enabled* in components.env (disabled components are
+# simply not written there). Because syncPolicy.automated.prune is true
+# below, Argo CD's own reconciliation does the rest natively:
+#   - flip a flag in components.env to false, re-render, push -> the file
+#     disappears from gitops/rendered/ -> this Application prunes the
+#     matching child Application on its next sync -> cascades to delete
+#     that component's resources (every child carries the same
+#     resources-finalizer this Application has).
+#   - flip it back to true, re-render, push -> the file reappears -> Argo CD
+#     creates the child Application again.
+# No manual `kubectl delete application` needed; Argo CD is the control loop.
+#
+# Without a git remote, scripts/04-apply-apps.sh's bash prune loop is a
+# same-day stand-in that does the equivalent delete imperatively. Once this
+# root Application is applied, prefer it -- it's the native mechanism.
+#
+# Setup (commit the *rendered* output, since Argo CD's git source can't run
+# envsubst itself):
+#
+#   ./scripts/render-apps.sh
+#   git add -A gitops/rendered && git commit -m "render manifests"
+#   git remote add origin <your-repo-url> && git push -u origin main
+#
+# Then set repoURL below (path is already gitops/rendered) and apply:
+#
+#   kubectl apply -f gitops/root-app.yaml
+#
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/minikube-homelab.git # <-- set this
+    targetRevision: main
+    path: gitops/rendered
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

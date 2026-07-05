@@ -1,0 +1,69 @@
+# Full Kubeflow suite (Pipelines, Notebooks, Katib, Training Operator,
+# KServe, Central Dashboard, etc).
+#
+# WHY THIS FILE ISN'T IN gitops/apps/: everything else in this platform
+# installs via a versioned Helm chart, which is what
+# scripts/build-applicationset.py's template assumes (repoURL + chart +
+# targetRevision + helm.values). Kubeflow's official install path is a
+# git+kustomize bundle (kubeflow/manifests, "example" kustomization), not a
+# Helm chart -- it doesn't fit that template. So this is a standalone Argo
+# CD Application, controlled by KUBEFLOW_ENABLED in components.env but
+# applied/pruned directly by scripts/04-apply-apps.sh's "Special (non-Helm)
+# components" step, not by the ApplicationSet.
+#
+# WHY THE EXTRA SYNC OPTIONS: Kubeflow's own manifests are famous for
+# needing a two-pass `kubectl apply` on a fresh cluster -- some resources
+# reference CRDs from a different kustomize component that hasn't been
+# applied yet, so the very first apply errors on those and a second pass
+# succeeds once the CRDs exist. `SkipDryRunOnMissingResource=true` lets
+# Argo CD's sync survive that (skipping dry-run validation for kinds it
+# doesn't recognize yet), `ServerSideApply=true` avoids the same annotation
+# size problem large CRDs hit elsewhere in this platform (see
+# scripts/02-foundational-crds.sh), and the retry/backoff policy gives it
+# several more passes to fully converge as CRDs land. This is the commonly
+# documented pattern for installing Kubeflow via Argo CD -- expect it to
+# take several sync attempts (minutes, not seconds) before every resource
+# is Healthy, and don't be surprised if you need to inspect
+# `kubectl -n argocd get application kubeflow -o yaml` for lingering errors
+# on a first install.
+#
+# RESOURCES: this is heavy on top of everything else in this platform.
+# Raise Minikube's sizing well beyond this repo's default 8 CPU/36GB before
+# enabling it, or disable other components to make room.
+#
+# VERSION: KUBEFLOW_VERSION in versions.env is a git tag/branch in
+# kubeflow/manifests, not a Helm chart version -- check
+# https://github.com/kubeflow/manifests for the latest release branch,
+# since ./update-versions.sh doesn't track this one automatically (it's not
+# a Helm repo or a GitHub "releases" endpoint kubeflow/manifests uses in a
+# way that maps cleanly to the other components' update mechanism).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubeflow
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kubeflow/manifests.git
+    targetRevision: ${KUBEFLOW_VERSION}
+    path: example
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kubeflow
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m

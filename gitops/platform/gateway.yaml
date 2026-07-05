@@ -1,0 +1,43 @@
+# Shared platform Gateway (Envoy Gateway) terminating TLS for *.lab.local
+# with a cert-manager-issued wildcard cert. All component HTTPRoutes
+# (gitops/platform/routes/*.yaml) attach to this from their own namespaces.
+# Applied by scripts/08-platform-gateway.sh.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lab-local-wildcard
+  namespace: envoy-gateway-system
+spec:
+  secretName: lab-local-wildcard-tls
+  commonName: "*.lab.local"
+  dnsNames:
+    - "*.lab.local"
+    - "lab.local"
+  issuerRef:
+    name: homelab-ca
+    kind: ClusterIssuer
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: platform
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: lab-local-wildcard-tls
+      allowedRoutes:
+        namespaces:
+          from: All

@@ -1,0 +1,38 @@
+# MetalLB: LoadBalancer IPs without `minikube tunnel`. NOTE: with the
+# docker driver on macOS the assigned IPs live on Docker's internal
+# network and are NOT reachable from the host -- `minikube tunnel` is
+# still the practical path there. MetalLB is useful with the qemu/vfkit
+# drivers or on Linux. The IPAddressPool/L2Advertisement config is applied
+# by scripts/07-metallb-config.sh (derived from the minikube subnet).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metallb
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://metallb.github.io/metallb
+    chart: metallb
+    targetRevision: ${METALLB_VERSION}
+    helm:
+      releaseName: metallb
+      values: |
+        controller:
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

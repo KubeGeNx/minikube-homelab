@@ -1,0 +1,46 @@
+# Grafana Tempo (monolithic): traces backend. Receives OTLP (from Alloy)
+# and is wired into Grafana as a datasource via
+# gitops/apps/08-kube-prometheus-stack.yaml's additionalDataSources.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tempo
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: tempo
+    targetRevision: ${TEMPO_CHART_VERSION}
+    helm:
+      releaseName: tempo
+      values: |
+        persistence:
+          enabled: true
+          storageClassName: standard
+          size: 10Gi
+        tempo:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tracing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

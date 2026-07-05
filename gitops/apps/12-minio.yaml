@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.min.io/
+    chart: minio
+    targetRevision: ${MINIO_CHART_VERSION}
+    helm:
+      releaseName: minio
+      values: |
+        mode: standalone
+        replicas: 1
+        rootUser: homelab-admin
+        rootPassword: HomelabMinio123!
+        persistence:
+          enabled: true
+          storageClass: standard
+          size: 20Gi
+        resources:
+          requests:
+            cpu: 50m
+            memory: 256Mi
+        service:
+          type: ClusterIP
+        buckets:
+          - name: velero-backups
+            policy: none
+            purge: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: minio
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

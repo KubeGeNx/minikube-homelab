@@ -1,0 +1,60 @@
+# Example: expose a Service through Envoy Gateway using Gateway API.
+# Apply with: kubectl apply -f examples/gateway-httproute-sample.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-gateway
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: tcp-postgres
+      protocol: TCP
+      port: 5432
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: demo-app
+  namespace: default
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: envoy-gateway-system
+  hostnames:
+    - "demo.homelab.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: demo-app
+          port: 80
+---
+# TCPRoute example (experimental channel CRD, installed by
+# scripts/02-foundational-crds.sh). Useful for exposing non-HTTP TCP
+# services (databases, custom protocols) through the same Gateway.
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: demo-tcp
+  namespace: default
+spec:
+  parentRefs:
+    - name: homelab-gateway
+      namespace: envoy-gateway-system
+      sectionName: tcp-postgres
+  rules:
+    - backendRefs:
+        - name: demo-tcp-service
+          port: 5432

@@ -1,0 +1,16 @@
+# MinIO web console (API stays cluster-internal on minio:9000).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  parentRefs:
+    - name: platform
+      namespace: envoy-gateway-system
+  hostnames:
+    - minio.lab.local
+  rules:
+    - backendRefs:
+        - name: minio-console
+          port: 9001

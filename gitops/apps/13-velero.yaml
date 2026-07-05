@@ -1,0 +1,65 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://vmware-tanzu.github.io/helm-charts
+    chart: velero
+    targetRevision: ${VELERO_VERSION}
+    helm:
+      releaseName: velero
+      values: |
+        # NOTE: no velero-plugin-for-csi initContainer here on purpose --
+        # the CSI plugin was merged into Velero core in 1.14 (chart 8.x =
+        # Velero 1.15), and installing the old standalone plugin makes the
+        # server fail at startup. And no EnableCSI/snapshots: minikube's
+        # default hostpath provisioner isn't CSI, so PV snapshots can't
+        # work -- file-system backup via the node agent is what actually
+        # backs up volume data on this cluster.
+        initContainers:
+          - name: velero-plugin-for-aws
+            image: velero/velero-plugin-for-aws:v1.11.0
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+        credentials:
+          existingSecret: velero-minio-credentials
+        configuration:
+          backupStorageLocation:
+            - name: default
+              provider: aws
+              bucket: velero-backups
+              config:
+                region: minio
+                s3ForcePathStyle: "true"
+                s3Url: http://minio.minio.svc.cluster.local:9000
+          defaultVolumesToFsBackup: true
+        snapshotsEnabled: false
+        deployNodeAgent: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        schedules:
+          daily-full-backup:
+            schedule: "0 2 * * *"
+            template:
+              ttl: 240h
+              includedNamespaces:
+                - "*"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

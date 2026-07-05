@@ -1,0 +1,79 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: ${KUBE_PROMETHEUS_STACK_VERSION}
+    helm:
+      releaseName: kube-prometheus-stack
+      values: |
+        prometheus:
+          prometheusSpec:
+            retention: 7d
+            # Alloy remote-writes scraped metrics here (gitops/apps/05-alloy.yaml)
+            enableRemoteWriteReceiver: true
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: standard
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+        grafana:
+          enabled: true
+          adminPassword: HomelabGrafana123!
+          persistence:
+            enabled: true
+            storageClassName: standard
+            size: 5Gi
+          # Loki + Tempo pre-wired as datasources (gitops/apps/11-loki-stack.yaml,
+          # 04-tempo.yaml). URLs are the in-cluster service DNS names.
+          additionalDataSources:
+            - name: Loki
+              type: loki
+              url: http://loki-stack.logging.svc:3100
+              access: proxy
+            - name: Tempo
+              type: tempo
+              url: http://tempo.tracing.svc:3100
+              access: proxy
+        alertmanager:
+          enabled: true
+          alertmanagerSpec:
+            resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+        kubeStateMetrics:
+          enabled: true
+        nodeExporter:
+          enabled: true
+        prometheusOperator:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

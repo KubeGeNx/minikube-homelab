@@ -1,0 +1,36 @@
+# TLS chain for *.lab.local: a SelfSigned issuer bootstraps a root CA cert,
+# and the "homelab-ca" ClusterIssuer signs everything else off that CA.
+# Migrating to Let's Encrypt or internal PKI later = swap issuerRef in
+# gitops/platform/gateway.yaml's Certificate to a new ClusterIssuer.
+# Applied by scripts/08-platform-gateway.sh once cert-manager is Healthy.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: homelab-root-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: homelab-root-ca
+  secretName: homelab-root-ca
+  duration: 87600h # 10y
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: homelab-ca
+spec:
+  ca:
+    secretName: homelab-root-ca

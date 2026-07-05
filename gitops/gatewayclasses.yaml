@@ -1,0 +1,12 @@
+# GatewayClass for Envoy Gateway. Applied directly (like namespaces.yaml)
+# rather than as an Argo CD Application, since it's a small static resource
+# that just needs the Gateway API CRDs (installed in step 02) and the Envoy
+# Gateway controller (installed by gitops/apps/06-envoy-gateway.yaml) to
+# exist. Order between this and the controller doesn't matter -- Kubernetes
+# accepts the object either way and the controller picks it up once running.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller

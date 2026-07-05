@@ -1,0 +1,76 @@
+# Every namespace this platform could possibly use, one per component
+# (whether currently enabled in components.env or not). This file is NOT
+# applied wholesale: scripts/04-apply-apps.sh only creates namespaces for
+# components that are actually enabled (see its "Applying namespaces for
+# enabled components only" step). This file exists so cleanup.sh has a
+# single place listing every namespace to check/force-delete during
+# teardown, including ones a component that's since been disabled left
+# behind.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: metallb-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-secrets
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: envoy-gateway-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tracing
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alloy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: olm
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: operators
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero
+---
+# Kubeflow's own kustomize bundle creates several more namespaces beyond
+# this one (knative-serving, kserve, auth, etc.) as part of its manifests --
+# this entry is just the primary one. A full Kubeflow teardown may need:
+#   kubectl get namespaces | grep -E 'kubeflow|knative|kserve|katib|auth'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubeflow
