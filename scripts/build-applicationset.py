@@ -146,7 +146,11 @@ def main():
                     },
                     "syncPolicy": {
                         "automated": {"prune": True, "selfHeal": True},
-                        "syncOptions": ["CreateNamespace=true"],
+                        # ServerSideApply: large CRDs (e.g. agentgateway's)
+                        # exceed the 262144-byte annotation limit that
+                        # client-side apply's last-applied-configuration
+                        # annotation hits.
+                        "syncOptions": ["CreateNamespace=true", "ServerSideApply=true"],
                     },
                 },
             },

@@ -17,6 +17,8 @@ minio|MINIO_ENABLED|12-minio.yaml|3
 velero|VELERO_ENABLED|13-velero.yaml|4
 kagent-crds|KAGENT_ENABLED|14-kagent-crds.yaml|1
 kagent|KAGENT_ENABLED|15-kagent.yaml|2
+agentgateway-crds|AGENTGATEWAY_ENABLED|17-agentgateway-crds.yaml|1
+agentgateway|AGENTGATEWAY_ENABLED|18-agentgateway.yaml|2
 '
 
 # Kubeflow and OLM are NOT in COMPONENT_TABLE above: it installs via a git+kustomize

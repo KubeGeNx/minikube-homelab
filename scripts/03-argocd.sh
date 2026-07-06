@@ -50,6 +50,24 @@ stringData:
   enableOCI: "true"
 REPOEOF
 
+# Same deal for agentgateway's OCI registry (used by
+# gitops/apps/17-agentgateway-crds.yaml and 18-agentgateway.yaml).
+echo "Registering oci://cr.agentgateway.dev/charts as a Helm OCI repository..."
+kubectl apply -f - <<'REPOEOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-agentgateway-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: agentgateway-oci
+  type: helm
+  url: cr.agentgateway.dev/charts
+  enableOCI: "true"
+REPOEOF
+
 echo "Argo CD installed."
 echo "Admin password:"
 echo "  kubectl -n $NAMESPACE get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"

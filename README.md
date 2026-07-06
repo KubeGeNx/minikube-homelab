@@ -51,6 +51,7 @@ if they were disabled:
 make velero     # also installs minio (its backup target)
 make alloy      # also installs kube-prometheus-stack, loki-stack, tempo
 make kagent     # AI agent framework -- needs an API key first, see below
+make agentgateway  # agentic-traffic gateway (LLM/MCP/A2A + HTTP), see below
 make kubeflow   # heavy! read the Kubeflow notes first
 ```
 
@@ -79,6 +80,7 @@ make apply
 | Observability | Prometheus, Grafana, Alertmanager, Loki (logs), Tempo (traces), Alloy (collector), kube-state-metrics, node-exporter | on |
 | Backup | Velero (backs up to MinIO) | on |
 | AI agents | kagent (`make kagent`, needs LLM API key) | off |
+| AI gateway | agentgateway (`make agentgateway`) | off |
 | Operators | OLM / OperatorHub (`make olm`) | off |
 | ML platform | Kubeflow full suite (`make kubeflow`, very heavy) | off |
 
@@ -217,6 +219,29 @@ make kagent
 kagent's chart evolves quickly — verify the Helm value that consumes the
 `kagent-model-provider` secret against `helm show values kagent/kagent` for
 your pinned version (see the commented block in `gitops/apps/15-kagent.yaml`).
+
+### agentgateway (AI/agentic-traffic gateway)
+
+[agentgateway.dev](https://agentgateway.dev) is a Gateway API-native proxy
+for agentic traffic — LLM providers, MCP servers, agent-to-agent (A2A) — and
+plain HTTP. Two Argo CD Applications (`agentgateway-crds` + `agentgateway`,
+OCI charts from `cr.agentgateway.dev/charts`) install the control plane into
+`agentgateway-system`; it then creates an `agentgateway` GatewayClass and
+spins up a proxy Deployment per Gateway you create.
+
+```bash
+make agentgateway                          # install
+./scripts/10-agentgateway-sample-test.sh   # end-to-end test with the official
+                                           # httpbin sample (add --keep to keep it)
+```
+
+The test applies `examples/agentgateway-httpbin-sample.yaml` (Gateway +
+httpbin + HTTPRoute, from the [official sample-app guide](https://agentgateway.dev/docs/kubernetes/latest/install/sample-app/)),
+port-forwards the proxy, and checks that
+`curl localhost:18080/headers -H "host: www.example.com"` returns 200.
+Inspect routes in the read-only Admin UI:
+`kubectl -n agentgateway-system port-forward deployment/agentgateway-proxy 15000`
+→ http://localhost:15000/ui/.
 
 ### Kubeflow (ML platform)
 

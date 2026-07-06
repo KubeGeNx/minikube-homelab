@@ -1,0 +1,34 @@
+# agentgateway (agentgateway.dev) control plane. Watches Gateway API
+# resources with gatewayClassName "agentgateway" and spins up an
+# agentgateway proxy Deployment per Gateway. Requires the Gateway API CRDs
+# (scripts/02-foundational-crds.sh) and the agentgateway CRDs
+# (17-agentgateway-crds.yaml, wave 1).
+#
+# Try it: kubectl apply -f examples/agentgateway-httpbin-sample.yaml
+# (creates a Gateway + httpbin backend + HTTPRoute -- see README).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentgateway
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: cr.agentgateway.dev/charts
+    chart: agentgateway
+    targetRevision: ${AGENTGATEWAY_VERSION}
+    helm:
+      releaseName: agentgateway
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentgateway-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

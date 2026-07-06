@@ -34,7 +34,9 @@ if [ ! -f "$VERSIONS_FILE" ]; then
 fi
 
 # One row per component: VAR|TYPE|REPO_ALIAS|REPO_URL|CHART_OR_GH_SLUG
-# TYPE is "helm" (Helm chart repo) or "ghrelease" (GitHub releases API).
+# TYPE is "helm" (Helm chart repo), "ghrelease" (GitHub releases API), or
+# "ocitags" (OCI registry tags API; REPO_URL is the registry base URL and
+# the slug is the repository path within it).
 COMPONENTS='
 CERT_MANAGER_VERSION|helm|jetstack|https://charts.jetstack.io|cert-manager
 METALLB_VERSION|helm|metallb|https://metallb.github.io/metallb|metallb
@@ -50,6 +52,7 @@ ENVOY_GATEWAY_VERSION|ghrelease|-|-|envoyproxy/gateway
 GATEWAY_API_VERSION|ghrelease|-|-|kubernetes-sigs/gateway-api
 SNAPSHOTTER_VERSION|ghrelease|-|-|kubernetes-csi/external-snapshotter
 KAGENT_VERSION|helm|kagent|https://kagent-dev.github.io/kagent|kagent
+AGENTGATEWAY_VERSION|ocitags|-|https://cr.agentgateway.dev|charts/agentgateway
 OLM_VERSION|ghrelease|-|-|operator-framework/operator-lifecycle-manager
 '
 
@@ -75,6 +78,15 @@ latest_gh_version() {
     | jq -r '.tag_name // empty'
 }
 
+# Latest stable tag from an OCI registry's tags API (e.g.
+# https://cr.agentgateway.dev/v2/charts/agentgateway/tags/list). Filters
+# prereleases (any tag containing "-") and picks the highest semver.
+latest_oci_version() {
+  local base="$1" repo="$2"
+  curl -sf "${base}/v2/${repo}/tags/list" \
+    | jq -r '[.tags[] | select(test("-") | not)] | sort_by(sub("^v";"") | split(".") | map(tonumber)) | last // empty'
+}
+
 echo "Checking latest versions..."
 printf "%-30s %-15s %-15s\n" "COMPONENT" "CURRENT" "LATEST"
 printf "%-30s %-15s %-15s\n" "---------" "-------" "------"
@@ -89,6 +101,8 @@ while IFS='|' read -r var type alias url slug; do
 
   if [ "$type" = "helm" ]; then
     latest="$(latest_helm_version "$alias" "$url" "$slug" || true)"
+  elif [ "$type" = "ocitags" ]; then
+    latest="$(latest_oci_version "$url" "$slug" || true)"
   else
     latest="$(latest_gh_version "$slug" || true)"
   fi

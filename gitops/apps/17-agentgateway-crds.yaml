@@ -1,0 +1,36 @@
+# agentgateway (agentgateway.dev) CRDs -- separate chart so the CRDs land
+# before the controller (wave 1 vs 2). Shares AGENTGATEWAY_ENABLED with
+# 18-agentgateway.yaml. OCI chart: cr.agentgateway.dev/charts is registered
+# as a Helm OCI repository by scripts/03-argocd.sh (secret
+# repo-agentgateway-oci, enableOCI) -- the repoURL here must match that
+# registration exactly (no oci:// scheme, registry namespace only).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentgateway-crds
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: cr.agentgateway.dev/charts
+    chart: agentgateway-crds
+    targetRevision: ${AGENTGATEWAY_VERSION}
+    helm:
+      releaseName: agentgateway-crds
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentgateway-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Required: these CRDs exceed the 262144-byte annotation limit under
+      # client-side apply. The builder sets this globally in the
+      # ApplicationSet template (scripts/build-applicationset.py).
+      - ServerSideApply=true
