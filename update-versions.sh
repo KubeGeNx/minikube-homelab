@@ -59,6 +59,7 @@ AGENTGATEWAY_VERSION|ocitags|-|https://cr.agentgateway.dev|charts/agentgateway
 KEDA_VERSION|helm|kedacore|https://kedacore.github.io/charts|keda
 VPA_CHART_VERSION|helm|fairwinds-stable|https://charts.fairwinds.com/stable|vpa
 OLM_VERSION|ghrelease|-|-|operator-framework/operator-lifecycle-manager
+AIRFLOW_VERSION|helm|apache-airflow|https://airflow.apache.org|airflow
 '
 
 current_value() {

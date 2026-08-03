@@ -52,6 +52,7 @@ make velero     # also installs minio (its backup target)
 make alloy      # also installs kube-prometheus-stack, loki-stack, tempo
 make kagent     # AI agent framework -- needs an API key first, see below
 make agentgateway  # agentic-traffic gateway (LLM/MCP/A2A + HTTP), see below
+make airflow    # workflow orchestration (DAGs), see below
 make gitlab     # GitLab CE -- heavy! read the GitLab notes first
 make kubeflow   # heavy! read the Kubeflow notes first
 ```
@@ -86,6 +87,7 @@ make apply
 | Autoscaling | KEDA (`make keda`), event-driven ScaledObject/ScaledJob autoscaling | off |
 | Autoscaling | VPA (`make vpa`), right-sizes pod CPU/memory requests | off |
 | Source control & CI | GitLab CE (`make gitlab`, very heavy) + GitLab Runner (`make gitlab-runner`) | off |
+| Workflow orchestration | Apache Airflow (`make airflow`) | off |
 | Operators | OLM / OperatorHub (`make olm`) | off |
 | ML platform | Kubeflow full suite (`make kubeflow`, very heavy) | off |
 
@@ -351,6 +353,36 @@ values):
 Once both are up, verify the Runner is actually executing jobs with
 `examples/gitlab-ci-sample.yml` -- push it as `.gitlab-ci.yml` to a new
 project in the GitLab UI and confirm the pipeline goes green.
+
+### Airflow (workflow orchestration)
+
+[airflow.apache.org](https://airflow.apache.org) -- author DAGs in Python,
+schedule and monitor them from a web UI. One Argo CD Application
+(`apache-airflow/airflow` chart) installs it into the `airflow` namespace
+using `LocalExecutor` on the chart's bundled Postgres (Redis/Celery workers
+disabled) -- a single scheduler process runs tasks directly, which keeps
+the pod count reasonable for a homelab. `KubernetesExecutor` (each task run
+as its own Pod) is the natural next step if you outgrow that -- change
+`executor:` in `gitops/apps/24-airflow.yaml`.
+
+```bash
+make airflow
+```
+
+Not on the shared `*.lab.local` Gateway (same as kagent/agentgateway/KEDA/
+VPA) -- reach the UI with:
+
+```bash
+kubectl -n airflow port-forward svc/airflow-api-server 8080:8080
+```
+
+then open http://localhost:8080 (`admin` / `admin`, the chart's default).
+
+Try it with `examples/airflow-dag-sample.yaml` -- a ConfigMap holding one
+minimal DAG, mounted into the DAG processor by a volume already wired in
+`gitops/apps/24-airflow.yaml` (optional, so the base install doesn't need
+it to come up clean). Applying it is enough for the DAG to appear -- no
+values change, no restart, no git-sync/external repo required.
 
 ### Kubeflow (ML platform)
 

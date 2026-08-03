@@ -24,6 +24,7 @@ keda|KEDA_ENABLED|19-keda.yaml|2
 vpa|VPA_ENABLED|21-vpa.yaml|2
 gitlab|GITLAB_ENABLED|22-gitlab.yaml|1
 gitlab-runner|GITLAB_RUNNER_ENABLED|23-gitlab-runner.yaml|2
+airflow|AIRFLOW_ENABLED|24-airflow.yaml|2
 '
 
 # Kubeflow and OLM are NOT in COMPONENT_TABLE above: it installs via a git+kustomize

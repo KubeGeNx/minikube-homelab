@@ -1,0 +1,34 @@
+# Sample DAG for Airflow (`make airflow` first): kubectl apply -f examples/airflow-dag-sample.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-example-dags
+  namespace: airflow
+data:
+  hello_world.py: |
+    from datetime import datetime
+
+    from airflow.sdk import DAG
+    from airflow.providers.standard.operators.bash import BashOperator
+
+    with DAG(
+        dag_id="example_hello_world",
+        description="Minimal sample DAG for the minikube-homelab Airflow install",
+        schedule="@hourly",
+        start_date=datetime(2024, 1, 1),
+        catchup=False,
+        is_paused_upon_creation=False,
+        tags=["example"],
+    ) as dag:
+        hello = BashOperator(
+            task_id="hello",
+            bash_command="echo 'Hello from the minikube-homelab Airflow install!'",
+        )
+
+        world = BashOperator(
+            task_id="world",
+            bash_command="echo 'world :)'",
+        )
+
+        hello >> world

@@ -1,0 +1,42 @@
+# Apache Airflow (airflow.apache.org). LocalExecutor, no Celery/Redis.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: airflow
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://airflow.apache.org
+    chart: airflow
+    targetRevision: ${AIRFLOW_VERSION}
+    helm:
+      releaseName: airflow
+      values: |
+        executor: LocalExecutor
+        redis:
+          enabled: false
+        statsd:
+          enabled: false
+        dagProcessor:
+          extraVolumes:
+            - name: example-dags
+              configMap:
+                name: airflow-example-dags
+                optional: true
+          extraVolumeMounts:
+            - name: example-dags
+              mountPath: /opt/airflow/dags/examples
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: airflow
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
