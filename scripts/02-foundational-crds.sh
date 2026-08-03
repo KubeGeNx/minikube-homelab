@@ -14,7 +14,7 @@ set -a
 source "$ROOT_DIR/versions.env"
 set +a
 
-echo "--- Gateway API CRDs ($GATEWAY_API_VERSION, experimental channel: adds TCPRoute/TLSRoute/UDPRoute/GRPCRoute) ---"
+echo "--- Gateway API CRDs ($GATEWAY_API_VERSION, standard channel: GatewayClass/Gateway/HTTPRoute/ReferenceGrant) ---"
 # Gateway API's CRDs have huge OpenAPI schemas. A normal client-side
 # `kubectl apply` stores the whole previous config in the
 # kubectl.kubernetes.io/last-applied-configuration annotation, which blows
@@ -22,7 +22,11 @@ echo "--- Gateway API CRDs ($GATEWAY_API_VERSION, experimental channel: adds TCP
 # Too long"). Server-side apply doesn't use that annotation at all (it uses
 # managed fields instead), which is the fix the Gateway API project itself
 # recommends for this exact error.
-kubectl apply --server-side --force-conflicts -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml"
+#
+# Standard channel only -- we don't use the experimental-only resources
+# (TCPRoute/TLSRoute/UDPRoute/GRPCRoute); switch to experimental-install.yaml
+# if a future component needs one of those.
+kubectl apply --server-side --force-conflicts -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
 
 # kubectl apply returning doesn't guarantee the API server has finished
 # registering the CRD's REST endpoint yet -- anything that applies a

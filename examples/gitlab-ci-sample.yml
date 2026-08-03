@@ -1,0 +1,25 @@
+# Sample .gitlab-ci.yml to verify GitLab Runner is registered and picking
+# up jobs from your self-hosted GitLab CE instance.
+#
+# Prereqs: GitLab CE is installed and running (`make gitlab`), and GitLab
+# Runner is registered against it (see the "GitLab CE + GitLab Runner"
+# section of README.md -- scripts/11-gitlab-runner-secret.sh + `make
+# gitlab-runner`).
+#
+# Usage:
+#   1. In the GitLab UI, create a new project (e.g. "runner-smoke-test").
+#   2. Push this file to it as .gitlab-ci.yml:
+#        mkdir runner-smoke-test && cd runner-smoke-test
+#        cp <this file> .gitlab-ci.yml
+#        git init && git add .gitlab-ci.yml
+#        git commit -m "runner smoke test"
+#        git remote add origin <project-clone-url-from-gitlab-ui>
+#        git push -u origin main
+#   3. Watch the pipeline: Project > Build > Pipelines. A green "hello" job
+#      means the Runner picked up and executed the job successfully.
+
+hello:
+  stage: test
+  script:
+    - echo "GitLab Runner is alive on $(hostname)"
+    - uname -a

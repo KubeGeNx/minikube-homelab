@@ -8,6 +8,7 @@ COMPONENT_TABLE='
 cert-manager|CERT_MANAGER_ENABLED|01-cert-manager.yaml|1
 metallb|METALLB_ENABLED|02-metallb.yaml|1
 external-secrets|EXTERNAL_SECRETS_ENABLED|03-external-secrets.yaml|1
+kyverno|KYVERNO_ENABLED|20-kyverno.yaml|1
 envoy-gateway|ENVOY_GATEWAY_ENABLED|06-envoy-gateway.yaml|2
 kube-prometheus-stack|KUBE_PROMETHEUS_STACK_ENABLED|08-kube-prometheus-stack.yaml|2
 tempo|TEMPO_ENABLED|04-tempo.yaml|3
@@ -19,6 +20,10 @@ kagent-crds|KAGENT_ENABLED|14-kagent-crds.yaml|1
 kagent|KAGENT_ENABLED|15-kagent.yaml|2
 agentgateway-crds|AGENTGATEWAY_ENABLED|17-agentgateway-crds.yaml|1
 agentgateway|AGENTGATEWAY_ENABLED|18-agentgateway.yaml|2
+keda|KEDA_ENABLED|19-keda.yaml|2
+vpa|VPA_ENABLED|21-vpa.yaml|2
+gitlab|GITLAB_ENABLED|22-gitlab.yaml|1
+gitlab-runner|GITLAB_RUNNER_ENABLED|23-gitlab-runner.yaml|2
 '
 
 # Kubeflow and OLM are NOT in COMPONENT_TABLE above: it installs via a git+kustomize

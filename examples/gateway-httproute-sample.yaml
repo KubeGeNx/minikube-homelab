@@ -41,9 +41,11 @@ spec:
         - name: demo-app
           port: 80
 ---
-# TCPRoute example (experimental channel CRD, installed by
-# scripts/02-foundational-crds.sh). Useful for exposing non-HTTP TCP
-# services (databases, custom protocols) through the same Gateway.
+# TCPRoute example (experimental-channel CRD, NOT installed by the
+# standard-channel install in scripts/02-foundational-crds.sh). Useful for
+# exposing non-HTTP TCP services (databases, custom protocols) through the
+# same Gateway -- to use it, switch that script back to
+# experimental-install.yaml first.
 apiVersion: gateway.networking.k8s.io/v1alpha2
 kind: TCPRoute
 metadata:

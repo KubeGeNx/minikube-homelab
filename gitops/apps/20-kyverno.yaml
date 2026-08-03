@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    targetRevision: ${KYVERNO_VERSION}
+    helm:
+      releaseName: kyverno
+      values: |
+        # Chart installs its own CRDs (crds.install: true, the default).
+        admissionController:
+          replicas: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        backgroundController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        cleanupController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        reportsController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,74 @@
+# Sample: CPU-based autoscaling with KEDA, using the classic
+# registry.k8s.io/hpa-example image (same one the upstream Kubernetes HPA
+# walkthrough uses) so the demo needs no external event source.
+#
+# Prereq: the keda component is installed (`make keda`).
+#
+#   kubectl apply -f examples/keda-scaledobject-sample.yaml
+#   kubectl get scaledobject,hpa,pods -n default -w
+#
+# Generate load to trigger scale-up:
+#   kubectl run -it --rm load-generator --image=busybox:1.36 --restart=Never \
+#     -- /bin/sh -c "while true; do wget -q -O- http://keda-cpu-demo; done"
+#
+# Stop the load-generator (ctrl-c, then delete if it lingers) and the
+# ScaledObject scales back down to minReplicaCount after cooldownPeriod.
+#
+# Clean up:
+#   kubectl delete -f examples/keda-scaledobject-sample.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keda-cpu-demo
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keda-cpu-demo
+  template:
+    metadata:
+      labels:
+        app: keda-cpu-demo
+    spec:
+      containers:
+        - name: hpa-example
+          image: registry.k8s.io/hpa-example
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keda-cpu-demo
+  namespace: default
+spec:
+  selector:
+    app: keda-cpu-demo
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: keda-cpu-demo
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: keda-cpu-demo
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  cooldownPeriod: 30
+  triggers:
+    - type: cpu
+      metadata:
+        type: Utilization
+        value: "50"

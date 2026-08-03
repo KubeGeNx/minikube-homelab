@@ -52,6 +52,7 @@ make velero     # also installs minio (its backup target)
 make alloy      # also installs kube-prometheus-stack, loki-stack, tempo
 make kagent     # AI agent framework -- needs an API key first, see below
 make agentgateway  # agentic-traffic gateway (LLM/MCP/A2A + HTTP), see below
+make gitlab     # GitLab CE -- heavy! read the GitLab notes first
 make kubeflow   # heavy! read the Kubeflow notes first
 ```
 
@@ -76,11 +77,15 @@ make apply
 | Networking | Gateway API, Envoy Gateway (shared TLS Gateway), cert-manager (self-signed CA) | on |
 | Networking | MetalLB (`make metallb`) | off |
 | Secrets | External Secrets Operator | on |
+| Policy | Kyverno (`make kyverno`), ClusterPolicy admission control | off |
 | Storage | MinIO (S3-compatible object storage), hostPath StorageClass, VolumeSnapshot CRDs | on |
 | Observability | Prometheus, Grafana, Alertmanager, Loki (logs), Tempo (traces), Alloy (collector), kube-state-metrics, node-exporter | on |
 | Backup | Velero (backs up to MinIO) | on |
 | AI agents | kagent (`make kagent`, needs LLM API key) | off |
 | AI gateway | agentgateway (`make agentgateway`) | off |
+| Autoscaling | KEDA (`make keda`), event-driven ScaledObject/ScaledJob autoscaling | off |
+| Autoscaling | VPA (`make vpa`), right-sizes pod CPU/memory requests | off |
+| Source control & CI | GitLab CE (`make gitlab`, very heavy) + GitLab Runner (`make gitlab-runner`) | off |
 | Operators | OLM / OperatorHub (`make olm`) | off |
 | ML platform | Kubeflow full suite (`make kubeflow`, very heavy) | off |
 
@@ -242,6 +247,110 @@ port-forwards the proxy, and checks that
 Inspect routes in the read-only Admin UI:
 `kubectl -n agentgateway-system port-forward deployment/agentgateway-proxy 15000`
 → http://localhost:15000/ui/.
+
+### Kyverno (policy engine)
+
+[kyverno.io](https://kyverno.io) enforces `ClusterPolicy`/`Policy` CRDs
+(validate, mutate, generate, cleanup) via a `ValidatingAdmissionWebhook` --
+Kubernetes-native policy-as-code, no separate policy language needed. One
+Argo CD Application installs the admission/background/cleanup/reports
+controllers plus CRDs (`crds.install: true`, the chart default) into the
+`kyverno` namespace.
+
+```bash
+make kyverno
+```
+
+Nothing is enforced out of the box -- the chart ships no built-in policies.
+Add your own `ClusterPolicy` resources (or the community pack at
+[kyverno/policies](https://github.com/kyverno/policies)) once it's running.
+Try enforcement with `examples/kyverno-policy-sample.yaml` (a `require-team-label`
+policy plus a Pod that violates it and one that complies).
+
+### KEDA (event-driven autoscaling)
+
+[keda.sh](https://keda.sh) adds `ScaledObject`/`ScaledJob` CRDs so workloads
+can scale on event sources (queues, Kafka, Prometheus metrics, cron, etc.),
+on top of what the stock HPA can do off CPU/memory alone. One Argo CD
+Application installs the operator + metrics server into the `keda`
+namespace.
+
+```bash
+make keda
+```
+
+Try it with `examples/keda-scaledobject-sample.yaml` (a CPU-triggered
+`ScaledObject` on the classic `hpa-example` image, self-contained -- no
+external event source needed).
+
+### VPA (Vertical Pod Autoscaler)
+
+Right-sizes container CPU/memory *requests* from observed usage, via
+`VerticalPodAutoscaler` CRDs -- complementary to KEDA/HPA, which scale
+*replica count* instead. Uses the
+[fairwinds-stable/vpa](https://github.com/FairwindsOps/charts/tree/master/stable/vpa)
+chart (a packaging of `kubernetes/autoscaler`'s VPA); installs recommender +
+updater + admission controller into the `vpa` namespace.
+
+```bash
+make vpa
+```
+
+Don't run VPA and an HPA/KEDA `ScaledObject` on the same resource metric
+(e.g. both on CPU) for one workload -- they'll fight over the same knob.
+
+Try it with `examples/vpa-sample.yaml` (a CPU/memory-hungry `stress`
+container plus a `VerticalPodAutoscaler` in `Auto` mode).
+
+### GitLab CE + GitLab Runner (self-hosted git + CI, on top of Argo CD)
+
+Argo CD is already installed and always on (it's the GitOps engine that
+owns everything in this platform) -- this section adds the other two legs
+of a fully self-hosted push-to-deploy loop: **GitLab CE** to host git repos
+(and your `.gitlab-ci.yml`), and **GitLab Runner** to actually execute
+those CI pipelines. Push code -> GitLab Runner builds/tests it -> Argo CD
+(pointed at your gitops repo, hosted on the same GitLab CE) picks up the
+result and deploys it -- no external SaaS required.
+
+**HEAVY**, comparable to Kubeflow: the official chart
+(`gitlab/gitlab`, `global.edition: ce`) brings its own Gitaly, Webservice,
+Sidekiq, container registry, Postgres, Redis, and a *second* dedicated
+Envoy Gateway instance -- expect 15-20+ pods. Bump
+`MINIKUBE_CPUS`/`MINIKUBE_MEMORY` well beyond the defaults before enabling,
+and expect to babysit the first sync (`kubectl get pods -n gitlab`) the way
+you would Kubeflow's.
+
+```bash
+make gitlab                                             # install GitLab CE
+# once it's Running: create an instance runner in its UI --
+# Settings > CI/CD > Runners > "New instance runner" -- then:
+GITLAB_RUNNER_TOKEN=glrt-... ./scripts/11-gitlab-runner-secret.sh
+make gitlab-runner                                       # install the Runner
+```
+
+Notes and known trade-offs (see `gitops/apps/22-gitlab.yaml` for the exact
+values):
+
+- **TLS is off by default** (`global.hosts.https: false`) -- GitLab CE is
+  reachable at `http://gitlab.lab.local/`, not through the shared
+  `*.lab.local` Gateway the rest of the platform uses. Wiring its Gateway
+  API TLS listeners to the platform's `homelab-ca` ClusterIssuer is left as
+  a manual follow-up; the chart's cert-manager integration is
+  version-specific enough that it isn't pinned down here.
+- It installs its **own dedicated Envoy Gateway + GatewayClass**
+  (`installEnvoy: true`) rather than reusing the platform's shared one, so
+  it gets its own LoadBalancer IP -- check `kubectl get gateway -A` for it.
+- `installCertmanager: false` -- it reuses the platform's own cert-manager
+  install instead of deploying a second one (two Helm releases both trying
+  to own the cluster-scoped CRDs would conflict).
+- The chart's bundled `gitlab-runner` subchart is disabled
+  (`gitlab-runner.install: false`) in favor of the standalone
+  `23-gitlab-runner.yaml` Application, so `GITLAB_RUNNER_ENABLED` can be
+  toggled independently once you have a token.
+
+Once both are up, verify the Runner is actually executing jobs with
+`examples/gitlab-ci-sample.yml` -- push it as `.gitlab-ci.yml` to a new
+project in the GitLab UI and confirm the pipeline goes green.
 
 ### Kubeflow (ML platform)
 

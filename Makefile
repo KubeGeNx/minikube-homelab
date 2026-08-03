@@ -14,7 +14,8 @@
 .DEFAULT_GOAL := help
 
 HELM_COMPONENTS := cert-manager metallb external-secrets envoy-gateway \
-  kube-prometheus-stack loki-stack tempo alloy minio velero kagent agentgateway
+  kube-prometheus-stack loki-stack tempo alloy minio velero kagent agentgateway keda \
+  kyverno vpa gitlab gitlab-runner
 SPECIAL_COMPONENTS := olm kubeflow
 
 .PHONY: help bootstrap prereqs cluster crds argocd base apply gateway tunnel hosts \

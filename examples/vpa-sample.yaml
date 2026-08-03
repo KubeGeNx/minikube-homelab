@@ -1,0 +1,56 @@
+# Sample: right-size a workload's CPU/memory requests with VPA. The
+# container burns CPU/memory on purpose so the recommender has something to
+# react to.
+#
+# Prereq: the vpa component is installed (`make vpa`).
+#
+#   kubectl apply -f examples/vpa-sample.yaml
+#
+# Watch the recommendation build up (takes a few minutes of real usage):
+#   kubectl describe vpa vpa-demo -n default
+#
+# With updateMode "Auto" the admission controller evicts and recreates the
+# pod once a recommendation is available, applying the new requests -- watch
+# for that restart:
+#   kubectl get pods -n default -l app=vpa-demo -w
+#
+# Clean up:
+#   kubectl delete -f examples/vpa-sample.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-demo
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-demo
+  template:
+    metadata:
+      labels:
+        app: vpa-demo
+    spec:
+      containers:
+        - name: stress
+          image: polinux/stress
+          command: ["stress"]
+          args: ["--cpu", "1", "--vm", "1", "--vm-bytes", "100M", "--vm-hang", "0"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-demo
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vpa-demo
+  updatePolicy:
+    updateMode: "Auto"

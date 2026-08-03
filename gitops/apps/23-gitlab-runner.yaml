@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitlab-runner
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.gitlab.io/
+    chart: gitlab-runner
+    targetRevision: ${GITLAB_RUNNER_VERSION}
+    helm:
+      releaseName: gitlab-runner
+      values: |
+        # Points at the in-cluster GitLab CE Application (22-gitlab.yaml).
+        # TLS is off there for now, hence http:// -- see that file's notes.
+        gitlabUrl: http://gitlab-webservice-default.gitlab.svc.cluster.local:8181/
+        # Secret created by scripts/11-gitlab-runner-secret.sh, containing
+        # keys "runner-token" (the runner auth token from GitLab's
+        # Settings > CI/CD > Runners > "New instance runner") and an empty
+        # "runner-registration-token" key (required for chart compatibility).
+        runners:
+          secret: gitlab-runner-auth-token
+          executor: kubernetes
+        replicas: 1
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitlab
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

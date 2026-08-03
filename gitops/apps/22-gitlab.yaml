@@ -1,0 +1,61 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitlab
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.gitlab.io/
+    chart: gitlab
+    targetRevision: ${GITLAB_VERSION}
+    helm:
+      releaseName: gitlab
+      values: |
+        # HEAVY: this is the full cloud-native GitLab chart (Gitaly,
+        # Webservice, Sidekiq, Registry, Postgres, Redis, MinIO-backed object
+        # storage, KAS, etc.) -- expect 15-20+ pods. Bump
+        # MINIKUBE_CPUS/MINIKUBE_MEMORY before enabling, and expect the
+        # first sync to take a while to converge.
+        global:
+          edition: ce
+          hosts:
+            domain: lab.local
+            # TLS deliberately off: wiring the chart's Gateway API TLS
+            # listeners to our homelab-ca ClusterIssuer (see
+            # gitops/platform/cluster-issuers.yaml) needs chart-version-
+            # specific cert-manager config beyond what's verified here.
+            # Reachable at http://gitlab.lab.local/ instead -- see
+            # README.md's GitLab section for how to add TLS yourself.
+            https: false
+          gatewayApi:
+            enabled: true
+            # Installs its own dedicated Envoy Gateway + GatewayClass
+            # (controllerName gateway.envoyproxy.io/gitlab-gatewayclass-
+            # controller) rather than reusing the platform's shared one, so
+            # it gets its own LoadBalancer IP -- not exposed through the
+            # shared *.lab.local Gateway the other components use.
+            installEnvoy: true
+            httpToHttpsRedirect: false
+        # Reuse the platform's own cert-manager (CERT_MANAGER_ENABLED,
+        # already installed) instead of a second Helm-managed instance --
+        # two releases both trying to own the cluster-scoped CRDs conflicts.
+        installCertmanager: false
+        # We install GitLab Runner as its own separate Application
+        # (23-gitlab-runner.yaml) so it can be toggled independently.
+        gitlab-runner:
+          install: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitlab
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

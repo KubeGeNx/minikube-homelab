@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vpa
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.fairwinds.com/stable
+    chart: vpa
+    targetRevision: ${VPA_CHART_VERSION}
+    helm:
+      releaseName: vpa
+      values: |
+        recommender:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        updater:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        admissionController:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vpa
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -32,6 +32,7 @@ deps_of() {
     tempo)         echo "kube-prometheus-stack" ;;                 # same
     alloy)         echo "kube-prometheus-stack loki-stack tempo" ;; # forwards to all three
     velero)        echo "minio" ;;                                 # S3 backup target
+    gitlab-runner) echo "gitlab" ;;                                # runner registers against it
     *)             echo "" ;;
   esac
 }

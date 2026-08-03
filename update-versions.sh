@@ -41,6 +41,7 @@ COMPONENTS='
 CERT_MANAGER_VERSION|helm|jetstack|https://charts.jetstack.io|cert-manager
 METALLB_VERSION|helm|metallb|https://metallb.github.io/metallb|metallb
 EXTERNAL_SECRETS_VERSION|helm|external-secrets|https://charts.external-secrets.io|external-secrets
+KYVERNO_VERSION|helm|kyverno|https://kyverno.github.io/kyverno/|kyverno
 KUBE_PROMETHEUS_STACK_VERSION|helm|prometheus-community|https://prometheus-community.github.io/helm-charts|kube-prometheus-stack
 LOKI_STACK_VERSION|helm|grafana|https://grafana.github.io/helm-charts|loki-stack
 TEMPO_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|tempo
@@ -48,11 +49,15 @@ ALLOY_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|alloy
 MINIO_CHART_VERSION|helm|minio|https://charts.min.io/|minio
 VELERO_VERSION|helm|vmware-tanzu|https://vmware-tanzu.github.io/helm-charts|velero
 ARGOCD_CHART_VERSION|helm|argo|https://argoproj.github.io/argo-helm|argo-cd
+GITLAB_VERSION|helm|gitlab|https://charts.gitlab.io/|gitlab
+GITLAB_RUNNER_VERSION|helm|gitlab|https://charts.gitlab.io/|gitlab-runner
 ENVOY_GATEWAY_VERSION|ghrelease|-|-|envoyproxy/gateway
 GATEWAY_API_VERSION|ghrelease|-|-|kubernetes-sigs/gateway-api
 SNAPSHOTTER_VERSION|ghrelease|-|-|kubernetes-csi/external-snapshotter
 KAGENT_VERSION|helm|kagent|https://kagent-dev.github.io/kagent|kagent
 AGENTGATEWAY_VERSION|ocitags|-|https://cr.agentgateway.dev|charts/agentgateway
+KEDA_VERSION|helm|kedacore|https://kedacore.github.io/charts|keda
+VPA_CHART_VERSION|helm|fairwinds-stable|https://charts.fairwinds.com/stable|vpa
 OLM_VERSION|ghrelease|-|-|operator-framework/operator-lifecycle-manager
 '
 
