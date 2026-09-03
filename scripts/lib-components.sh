@@ -25,6 +25,8 @@ vpa|VPA_ENABLED|21-vpa.yaml|2
 gitlab|GITLAB_ENABLED|22-gitlab.yaml|1
 gitlab-runner|GITLAB_RUNNER_ENABLED|23-gitlab-runner.yaml|2
 airflow|AIRFLOW_ENABLED|24-airflow.yaml|2
+rabbitmq|RABBITMQ_ENABLED|25-rabbitmq.yaml|2
+otel-collector|OTEL_COLLECTOR_ENABLED|26-otel-collector.yaml|4
 '
 
 # Kubeflow and OLM are NOT in COMPONENT_TABLE above: it installs via a git+kustomize

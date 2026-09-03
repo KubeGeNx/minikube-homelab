@@ -43,6 +43,7 @@ apply_route grafana.yaml    KUBE_PROMETHEUS_STACK_ENABLED
 apply_route prometheus.yaml KUBE_PROMETHEUS_STACK_ENABLED
 apply_route minio.yaml      MINIO_ENABLED
 apply_route tempo.yaml      TEMPO_ENABLED
+apply_route rabbitmq.yaml   RABBITMQ_ENABLED
 
 cat <<'EOF'
 
@@ -52,7 +53,7 @@ then:
 
   GATEWAY_IP=$(kubectl -n envoy-gateway-system get gateway platform \
     -o jsonpath='{.status.addresses[0].value}')
-  echo "$GATEWAY_IP argocd.lab.local grafana.lab.local prometheus.lab.local minio.lab.local tempo.lab.local" \
+  echo "$GATEWAY_IP argocd.lab.local grafana.lab.local prometheus.lab.local minio.lab.local tempo.lab.local rabbitmq.lab.local" \
     | sudo tee -a /etc/hosts
 
 (or use `make hosts`). The TLS chain is signed by the self-signed

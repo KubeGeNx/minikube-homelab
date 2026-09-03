@@ -31,6 +31,8 @@ deps_of() {
     loki-stack)    echo "kube-prometheus-stack" ;;                 # Grafana datasource lives there
     tempo)         echo "kube-prometheus-stack" ;;                 # same
     alloy)         echo "kube-prometheus-stack loki-stack tempo" ;; # forwards to all three
+    otel-collector) echo "tempo" ;;                                # gateway exports traces to it
+    rabbitmq)      echo "kube-prometheus-stack" ;;                 # ServiceMonitor CRD
     velero)        echo "minio" ;;                                 # S3 backup target
     gitlab-runner) echo "gitlab" ;;                                # runner registers against it
     *)             echo "" ;;

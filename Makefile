@@ -15,7 +15,7 @@
 
 HELM_COMPONENTS := cert-manager metallb external-secrets envoy-gateway \
   kube-prometheus-stack loki-stack tempo alloy minio velero kagent agentgateway keda \
-  kyverno vpa gitlab gitlab-runner airflow
+  kyverno vpa gitlab gitlab-runner airflow rabbitmq otel-collector
 SPECIAL_COMPONENTS := olm kubeflow
 
 .PHONY: help bootstrap prereqs cluster crds argocd base apply gateway tunnel hosts \
@@ -80,7 +80,7 @@ hosts:
 	if [ -z "$$GATEWAY_IP" ]; then \
 	  echo "Gateway has no address yet. With the docker driver, run 'minikube tunnel' first."; exit 1; \
 	fi; \
-	echo "$$GATEWAY_IP argocd.lab.local grafana.lab.local prometheus.lab.local minio.lab.local tempo.lab.local"; \
+	echo "$$GATEWAY_IP argocd.lab.local grafana.lab.local prometheus.lab.local minio.lab.local tempo.lab.local rabbitmq.lab.local"; \
 	echo ""; \
 	echo "Append it with:"; \
 	echo "  make hosts | head -1 | sudo tee -a /etc/hosts"

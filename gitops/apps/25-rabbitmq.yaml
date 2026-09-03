@@ -1,0 +1,68 @@
+# RabbitMQ (bitnami/rabbitmq chart). Message broker for the .NET
+# producer/consumer sample in examples/dotnet-rabbitmq/, which is also what
+# the KEDA rabbitmq-trigger demo scales on.
+#
+# IMAGE OVERRIDE, and why it's needed: in August 2025 Bitnami moved their
+# Docker Hub catalogue behind a subscription and relocated the free images
+# to the `bitnamilegacy` repository. The chart still defaults to
+# `docker.io/bitnami/rabbitmq:<tag>`, which no longer resolves --
+# `docker manifest inspect docker.io/bitnami/rabbitmq:4.1.3-debian-12-r1`
+# returns "not pullable", so the pod would sit in ImagePullBackOff. Pointing
+# image.repository at bitnamilegacy fixes that; the chart then refuses to
+# start because the image isn't its verified one, which is what
+# global.security.allowInsecureImages=true acknowledges. The official
+# `rabbitmq:4-management` image is NOT a drop-in here -- the Bitnami chart
+# depends on Bitnami's own filesystem layout and entrypoint scripts.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rabbitmq
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: rabbitmq
+    targetRevision: ${RABBITMQ_CHART_VERSION}
+    helm:
+      releaseName: rabbitmq
+      values: |
+        global:
+          security:
+            allowInsecureImages: true
+        image:
+          registry: docker.io
+          repository: bitnamilegacy/rabbitmq
+        replicaCount: 1
+        auth:
+          username: homelab
+          password: HomelabRabbit123!
+          erlangCookie: homelab-erlang-cookie
+        persistence:
+          enabled: true
+          storageClass: standard
+          size: 8Gi
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+        # Prometheus plugin + ServiceMonitor so queue depth shows up in the
+        # kube-prometheus-stack Grafana alongside the Tempo traces.
+        metrics:
+          enabled: true
+          serviceMonitor:
+            enabled: true
+            namespace: rabbitmq
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rabbitmq
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

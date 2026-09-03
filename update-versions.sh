@@ -46,6 +46,7 @@ KUBE_PROMETHEUS_STACK_VERSION|helm|prometheus-community|https://prometheus-commu
 LOKI_STACK_VERSION|helm|grafana|https://grafana.github.io/helm-charts|loki-stack
 TEMPO_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|tempo
 ALLOY_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|alloy
+OTEL_COLLECTOR_CHART_VERSION|helm|open-telemetry|https://open-telemetry.github.io/opentelemetry-helm-charts|opentelemetry-collector
 MINIO_CHART_VERSION|helm|minio|https://charts.min.io/|minio
 VELERO_VERSION|helm|vmware-tanzu|https://vmware-tanzu.github.io/helm-charts|velero
 ARGOCD_CHART_VERSION|helm|argo|https://argoproj.github.io/argo-helm|argo-cd
@@ -59,6 +60,7 @@ AGENTGATEWAY_VERSION|ocitags|-|https://cr.agentgateway.dev|charts/agentgateway
 KEDA_VERSION|helm|kedacore|https://kedacore.github.io/charts|keda
 VPA_CHART_VERSION|helm|fairwinds-stable|https://charts.fairwinds.com/stable|vpa
 OLM_VERSION|ghrelease|-|-|operator-framework/operator-lifecycle-manager
+RABBITMQ_CHART_VERSION|helm|bitnami|https://charts.bitnami.com/bitnami|rabbitmq
 AIRFLOW_VERSION|helm|apache-airflow|https://airflow.apache.org|airflow
 '
 
