@@ -1,0 +1,190 @@
+# Sample: .NET producer/consumer over RabbitMQ, traced end to end into
+# Grafana Tempo, with KEDA scaling the consumer on queue depth.
+#
+# Prereqs (all pulled in by `make rabbitmq otel-collector`):
+#   rabbitmq, otel-collector, tempo, kube-prometheus-stack, keda
+#
+# Build the image into minikube's docker daemon first -- there's no registry
+# in this cluster, so the image has to exist in the node's own daemon and
+# imagePullPolicy must be IfNotPresent (Never also works; Always would fail):
+#   eval $(minikube -p homelab docker-env)
+#   docker build -t orderflow:1.0.0 examples/dotnet-rabbitmq/src
+#
+#   kubectl apply -f examples/dotnet-rabbitmq/k8s.yaml
+#   kubectl get scaledobject,hpa,pods -l app.kubernetes.io/part-of=orderflow -w
+#
+# Clean up:
+#   kubectl delete -f examples/dotnet-rabbitmq/k8s.yaml
+---
+# The chart's own credentials secret lives in the rabbitmq namespace, and a
+# Pod can only mount secrets from its own namespace -- hence this copy.
+# Keep it in sync with auth.* in gitops/apps/25-rabbitmq.yaml.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orderflow-rabbitmq
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: orderflow
+stringData:
+  username: homelab
+  password: HomelabRabbit123!
+  # KEDA's rabbitmq scaler wants a full AMQP URI in one key.
+  host: amqp://homelab:HomelabRabbit123!@rabbitmq.rabbitmq.svc:5672/
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderflow-producer
+  namespace: default
+  labels:
+    app: orderflow-producer
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orderflow-producer
+  template:
+    metadata:
+      labels:
+        app: orderflow-producer
+        app.kubernetes.io/part-of: orderflow
+    spec:
+      containers:
+        - name: producer
+          image: orderflow:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ROLE
+              value: producer
+            - name: QUEUE
+              value: orders
+            - name: RABBITMQ_HOST
+              value: rabbitmq.rabbitmq.svc
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef: { name: orderflow-rabbitmq, key: username }
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef: { name: orderflow-rabbitmq, key: password }
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector-opentelemetry-collector.otel.svc:4317
+            - name: OTEL_SERVICE_NAME
+              value: orderflow-producer
+            # Publishes faster than one consumer can drain (WORK_MS=400), so
+            # the queue builds up and KEDA has something to react to.
+            - name: PUBLISH_INTERVAL_MS
+              value: "250"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderflow-consumer
+  namespace: default
+  labels:
+    app: orderflow-consumer
+    app.kubernetes.io/part-of: orderflow
+spec:
+  # Left at 1 only for the first apply; the ScaledObject below owns this
+  # field afterwards -- don't edit it here or KEDA will fight you.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orderflow-consumer
+  template:
+    metadata:
+      labels:
+        app: orderflow-consumer
+        app.kubernetes.io/part-of: orderflow
+    spec:
+      containers:
+        - name: consumer
+          image: orderflow:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ROLE
+              value: consumer
+            - name: QUEUE
+              value: orders
+            - name: RABBITMQ_HOST
+              value: rabbitmq.rabbitmq.svc
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef: { name: orderflow-rabbitmq, key: username }
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef: { name: orderflow-rabbitmq, key: password }
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector-opentelemetry-collector.otel.svc:4317
+            - name: OTEL_SERVICE_NAME
+              value: orderflow-consumer
+            # Sampling is the SDK default (parentbased_always_on = keep
+            # everything). To sample, set the SAME values on both producer
+            # and consumer -- see README "Sampling". Use a parentbased_*
+            # variant so the consumer follows the producer's decision and
+            # traces stay whole across the queue:
+            #   - name: OTEL_TRACES_SAMPLER
+            #     value: parentbased_traceidratio
+            #   - name: OTEL_TRACES_SAMPLER_ARG
+            #     value: "0.1"
+            - name: WORK_MS
+              value: "400"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: orderflow-rabbitmq
+  namespace: default
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: orderflow-rabbitmq
+      key: host
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orderflow-consumer
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: orderflow
+spec:
+  scaleTargetRef:
+    name: orderflow-consumer
+  # Scale to zero when the queue is empty. KEDA only honours
+  # pollingInterval/cooldownPeriod when minReplicaCount is 0 (it warns on
+  # apply otherwise) -- with a floor of 1 the HPA owns the polling and these
+  # two fields are silently ignored. At 0, KEDA itself polls every 5s and
+  # activates the deployment from zero when a message appears.
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  pollingInterval: 5
+  cooldownPeriod: 30
+  triggers:
+    - type: rabbitmq
+      metadata:
+        # protocol: amqp reads queue depth over the AMQP connection itself.
+        # The alternative, protocol: http, talks to the management API on
+        # :15672 and is the one to use if you ever need queues matched by
+        # regex or vhost-wide aggregation.
+        protocol: amqp
+        queueName: orders
+        mode: QueueLength
+        # Target backlog per replica: KEDA aims for ~5 ready messages each,
+        # so a 50-deep queue asks for 10 replicas (capped by maxReplicaCount).
+        value: "5"
+      authenticationRef:
+        name: orderflow-rabbitmq
