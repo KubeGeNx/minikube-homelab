@@ -24,7 +24,7 @@ Docker daemon:
 
 ```bash
 eval $(minikube -p homelab docker-env)
-docker build -t orderflow:1.0.0 examples/dotnet-rabbitmq/src
+docker build -t orderflow:1.1.0 examples/dotnet-rabbitmq/src
 ```
 
 `imagePullPolicy: IfNotPresent` in `k8s.yaml` is what makes that work —
@@ -196,6 +196,52 @@ traces rooted at `orderflow-producer`:
 ```traceql
 { name = "orders process" }        # then look for traces with no "orders publish"
 ```
+
+## Shutdown, and why it decides whether traces are complete
+
+`AddOtlpExporter` defaults to a `BatchExportProcessor`, so finished spans sit
+in memory and leave on a timer — `OTEL_BSP_SCHEDULE_DELAY`, 5000 ms by
+default. The only thing that empties that buffer early is disposing the
+`TracerProvider`.
+
+Kubernetes ends a pod with **SIGTERM**, and `Console.CancelKeyPress` does not
+fire for it — that is SIGINT (Ctrl-C) only. So both roles register a SIGTERM
+handler as well:
+
+```csharp
+using var sigterm = PosixSignalRegistration.Create(
+    PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
+```
+
+`ctx.Cancel = true` suppresses the runtime's terminate-immediately default,
+which gives the loop time to break, `Main` to return, and the `using var
+tracer` to dispose and flush.
+
+Without it the failure is quiet and asymmetric, because the message and the
+span travel different paths. A `traceparent` header carries the parent span's
+*id*, not the span itself — 8 bytes that promise a span the consumer never
+sees. So if the producer is killed mid-batch:
+
+* the message still reaches RabbitMQ and is processed normally
+* the consumer still emits `orders process` claiming that parent
+* but `orders publish` never reaches Tempo
+
+leaving a trace in which every span has a parent and none is the root. Tempo
+cannot name the root, and the search results show
+`<root span not yet received>`. Measured on this sample before the handler
+existed: 137 orders published, 119 publish spans in Tempo, and the 18 missing
+ones were exactly the contiguous tail — 4.5 s of orders at
+`PUBLISH_INTERVAL_MS=250`, against the 5 s batch delay.
+
+The consumer needs the same handler for the mirror-image reason: killed
+mid-batch it strands `orders process` and `validate order`, leaving a root
+with no children.
+
+Two things that look like fixes but are not. Lowering
+`OTEL_BSP_SCHEDULE_DELAY` shrinks the window without closing it — whatever
+accumulated since the last tick is still lost. And a `finally` that calls
+`ForceFlush` only helps if control reaches it, which is precisely what an
+unhandled SIGTERM prevents.
 
 ## Inspecting RabbitMQ directly
 

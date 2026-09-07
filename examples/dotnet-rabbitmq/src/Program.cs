@@ -14,6 +14,7 @@
 // there is no automatic header plumbing -- it's the Inject/Extract pair
 // below, which is exactly what an auto-instrumentation library would do.
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using OpenTelemetry;
 using OpenTelemetry.Context.Propagation;
@@ -41,7 +42,7 @@ using var source = new ActivitySource(SourceName);
 using var tracer = Sdk.CreateTracerProviderBuilder()
     .AddSource(SourceName)
     .SetResourceBuilder(ResourceBuilder.CreateDefault()
-        .AddService(serviceName: service, serviceVersion: "1.0.0")
+        .AddService(serviceName: service, serviceVersion: "1.1.0")
         .AddAttributes(new Dictionary<string, object>
         {
             ["deployment.environment"] = "homelab",
@@ -76,7 +77,22 @@ await channel.QueueDeclareAsync(queue: queue, durable: true, exclusive: false,
                                 autoDelete: false, arguments: null);
 
 using var shutdown = new CancellationTokenSource();
+
+// Two signals, two handlers -- and the second one is the load-bearing one in
+// Kubernetes. CancelKeyPress is SIGINT only (Ctrl-C at a terminal); a pod
+// being scaled down or rescheduled gets SIGTERM, which it does not catch.
+//
+// Without the SIGTERM handler the loops below never see cancellation, so Main
+// never returns, so the `using var tracer` above is never disposed, so the
+// BatchExportProcessor's buffered spans (up to OTEL_BSP_SCHEDULE_DELAY, 5s by
+// default) are never flushed. On the producer that strands the `orders
+// publish` root span while its message still reaches the consumer -- Tempo
+// then shows the trace as "<root span not yet received>". On the consumer it
+// loses the other half. Cancelling here lets the loop break, Main return, and
+// Dispose() flush what is still queued.
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
+using var sigterm = PosixSignalRegistration.Create(
+    PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
 
 if (role == "producer")
     await RunProducerAsync(shutdown.Token);

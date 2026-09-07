@@ -8,7 +8,7 @@
 # in this cluster, so the image has to exist in the node's own daemon and
 # imagePullPolicy must be IfNotPresent (Never also works; Always would fail):
 #   eval $(minikube -p homelab docker-env)
-#   docker build -t orderflow:1.0.0 examples/dotnet-rabbitmq/src
+#   docker build -t orderflow:1.1.0 examples/dotnet-rabbitmq/src
 #
 #   kubectl apply -f examples/dotnet-rabbitmq/k8s.yaml
 #   kubectl get scaledobject,hpa,pods -l app.kubernetes.io/part-of=orderflow -w
@@ -53,7 +53,7 @@ spec:
     spec:
       containers:
         - name: producer
-          image: orderflow:1.0.0
+          image: orderflow:1.1.0
           imagePullPolicy: IfNotPresent
           env:
             - name: ROLE
@@ -106,7 +106,7 @@ spec:
     spec:
       containers:
         - name: consumer
-          image: orderflow:1.0.0
+          image: orderflow:1.1.0
           imagePullPolicy: IfNotPresent
           env:
             - name: ROLE
