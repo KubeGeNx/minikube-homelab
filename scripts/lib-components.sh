@@ -13,7 +13,8 @@ envoy-gateway|ENVOY_GATEWAY_ENABLED|06-envoy-gateway.yaml|2
 kube-prometheus-stack|KUBE_PROMETHEUS_STACK_ENABLED|08-kube-prometheus-stack.yaml|2
 tempo|TEMPO_ENABLED|04-tempo.yaml|3
 alloy|ALLOY_ENABLED|05-alloy.yaml|4
-loki-stack|LOKI_STACK_ENABLED|11-loki-stack.yaml|3
+loki|LOKI_ENABLED|11-loki.yaml|3
+mimir|MIMIR_ENABLED|28-mimir.yaml|3
 minio|MINIO_ENABLED|12-minio.yaml|3
 velero|VELERO_ENABLED|13-velero.yaml|4
 kagent-crds|KAGENT_ENABLED|14-kagent-crds.yaml|1
@@ -26,7 +27,9 @@ gitlab|GITLAB_ENABLED|22-gitlab.yaml|1
 gitlab-runner|GITLAB_RUNNER_ENABLED|23-gitlab-runner.yaml|2
 airflow|AIRFLOW_ENABLED|24-airflow.yaml|2
 rabbitmq|RABBITMQ_ENABLED|25-rabbitmq.yaml|2
-otel-collector|OTEL_COLLECTOR_ENABLED|26-otel-collector.yaml|4
+otel-gateway|OTEL_COLLECTOR_ENABLED|27-otel-gateway.yaml|4
+otel-agent|OTEL_COLLECTOR_ENABLED|26-otel-agent.yaml|5
+obi|OBI_ENABLED|29-obi.yaml|5
 '
 
 # Kubeflow and OLM are NOT in COMPONENT_TABLE above: it installs via a git+kustomize

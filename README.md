@@ -33,6 +33,7 @@ works as a smoke test (don't expect the full stack to fit).
 | `make bootstrap` | Full install from zero |
 | `make <component>` | Install one component **and its dependencies** (see below) |
 | `make apply` | Re-apply current config (safe anytime — only changes what changed) |
+| `make apply ENV=prod` | Same, against a different environment overlay (default `dev`) |
 | `make update-versions` | Pin every component to its latest release, then apply |
 | `make tunnel` | `minikube tunnel` for this cluster's profile (keep it running) |
 | `make hosts` | Print the `/etc/hosts` line for the `*.lab.local` URLs |
@@ -49,7 +50,7 @@ if they were disabled:
 
 ```bash
 make velero     # also installs minio (its backup target)
-make alloy      # also installs kube-prometheus-stack, loki-stack, tempo
+make alloy      # also installs kube-prometheus-stack, loki, mimir
 make kagent     # AI agent framework -- needs an API key first, see below
 make agentgateway  # agentic-traffic gateway (LLM/MCP/A2A + HTTP), see below
 make airflow    # workflow orchestration (DAGs), see below
@@ -79,10 +80,14 @@ make apply
 | Networking | MetalLB (`make metallb`) | off |
 | Secrets | External Secrets Operator | on |
 | Policy | Kyverno (`make kyverno`), ClusterPolicy admission control | off |
-| Storage | MinIO (S3-compatible object storage), hostPath StorageClass, VolumeSnapshot CRDs | on |
-| Observability | Prometheus, Grafana, Alertmanager, Loki (logs), Tempo (traces), Alloy (collector), kube-state-metrics, node-exporter | on |
+| Storage | MinIO (S3-compatible object storage — backs Mimir, Loki, Tempo and Velero), hostPath StorageClass, VolumeSnapshot CRDs | on |
+| Observability | Grafana, Alertmanager, Prometheus (scrape + remote-write only), kube-state-metrics, node-exporter, Alloy (infra collector) | on |
+| Observability | **Mimir** (metrics), **Loki 3** (logs), **Tempo distributed** (traces) — all on MinIO object storage | on |
+| Observability | OpenTelemetry Collector — agent DaemonSet + gateway StatefulSet (`make otel-collector`) | on |
+| Messaging | RabbitMQ (`make rabbitmq`), backs the `examples/dotnet-rabbitmq/` sample | on |
 | Backup | Velero (backs up to MinIO) | on |
 | AI agents | kagent (`make kagent`, needs LLM API key) | off |
+| Observability | OpenTelemetry eBPF Instrumentation (`make obi`) — zero-code HTTP/gRPC spans, no SDK required | off |
 | AI gateway | agentgateway (`make agentgateway`) | off |
 | Autoscaling | KEDA (`make keda`), event-driven ScaledObject/ScaledJob autoscaling | off |
 | Autoscaling | VPA (`make vpa`), right-sizes pod CPU/memory requests | off |
@@ -91,10 +96,57 @@ make apply
 | Operators | OLM / OperatorHub (`make olm`) | off |
 | ML platform | Kubeflow full suite (`make kubeflow`, very heavy) | off |
 
-How the observability pieces fit together: Alloy collects pod logs → Loki,
-scrapes `prometheus.io/scrape`-annotated pods → Prometheus, and receives OTLP
-traces → Tempo. Loki and Tempo are pre-wired as Grafana datasources — nothing
-to configure by hand.
+How the observability pieces fit together. Two collectors, different jobs:
+
+**Alloy** is the cluster collector for infrastructure telemetry: pod logs →
+Loki, `prometheus.io/scrape`-annotated pods → Mimir. It no longer accepts
+traces — that was a second door into Tempo that bypassed enrichment,
+redaction, and sampling.
+
+**The OpenTelemetry Collector** is the front door for *application* telemetry,
+and runs as two tiers because those tiers cannot be collapsed:
+
+- **`otel-agent`** (DaemonSet) is where apps send OTLP. The chart sets
+  `internalTrafficPolicy: Local` on a DaemonSet's Service, so one DNS name —
+  `otel-agent-opentelemetry-collector.otel.svc:4317` — always reaches the agent
+  on the pod's own node. It enriches with Kubernetes metadata (which only works
+  here: one hop later the connection's source IP is the agent's, not the
+  workload's), redacts secrets before anything leaves the node, and derives RED
+  metrics from **100% of spans**.
+- **`otel-gateway`** (StatefulSet) tail-samples — keeping every error, slow,
+  expensive, or deep-loop trace and sampling the boring remainder — and is the
+  only egress to Tempo. Agents reach it over mTLS, routing by trace ID so all
+  spans of a trace land on one gateway pod, which is what makes a tail-sampling
+  decision coherent.
+
+Span metrics are derived in the agent, *in front of* the sampler, on purpose:
+behind it they would count the surviving fraction and silently understate every
+rate in Grafana.
+
+**Storage** is object storage, not PVCs. Mimir, Loki 3, and Tempo distributed
+all keep their blocks in MinIO, each with its own bucket and a credential
+scoped to that bucket. Retention becomes a policy setting rather than a
+disk-size accident, and the read path scales horizontally.
+
+**eBPF, optionally.** `make obi` adds OpenTelemetry eBPF Instrumentation as a
+DaemonSet, giving HTTP/gRPC spans and RED metrics for pods nobody instrumented
+— no code change, no redeploy. It runs unprivileged (capabilities dropped to
+the seven eBPF actually needs, read-only rootfs) but still requires `hostPID`
+and `hostNetwork`, which is why it is off by default and its namespace is
+PSA-privileged. It emits no `gen_ai.*` attributes and no token counts, so it
+complements the SDK instrumentation rather than replacing it.
+
+Prometheus is still there but its role narrowed: it scrapes ServiceMonitors and
+remote-writes to Mimir, keeping only 6h locally. Query anything historical from
+the Mimir datasource, which is Grafana's default.
+
+Tempo and Loki run multi-tenant (`X-Scope-OrgID`), with `agents` for normal
+telemetry at 30d and `agents-content` reserved for prompt/completion records at
+7d. Grafana's datasources pin the tenant, so the content tenant can later be put
+behind an RBAC role without touching anything else.
+
+Mimir, Loki, and Tempo are pre-wired as Grafana datasources — nothing to
+configure by hand.
 
 CNI: minikube's default, or set `MINIKUBE_CNI=cilium` (or `calico`) before
 bootstrap. The CNI is fixed at cluster creation — changing it later means
@@ -159,16 +211,35 @@ bootstrap.sh
                              then the TLS Gateway, routes, and secrets
 ```
 
-Three files control everything; each answers one question:
+Four files control everything; each answers one question:
 
 | File | Question it answers | Example |
 |---|---|---|
 | `components.env` | Is this component installed? | `MINIO_ENABLED=true` |
 | `versions.env` | Which version? | `CERT_MANAGER_VERSION=v1.15.3` |
 | `gitops/apps/<component>.yaml` | Which chart, with what config? | Helm `values:` block |
+| `environments/<env>/` | What differs in *this* environment? | `replicaCount: 1` |
+
+The first three are the base. `environments/<env>/` layers on top of them:
+`components.env` and `versions.env` there override the base key by key, and
+`values/<component>.yaml` is deep-merged over the app file's Helm values. An
+environment therefore lists only what actually differs — a prod overlay that
+pins two chart versions is two lines, not a copy of the whole file. See
+`environments/README.md` for the merge rules.
+
+`ENV` selects the overlay and defaults to `dev`:
+
+```bash
+make apply              # dev — the minikube profile
+make apply ENV=prod     # same architecture, production sizing
+```
+
+One environment per cluster. `dev` is a *scaled-down profile of the same
+architecture*, not a simpler one — if something only works in dev, that's a bug
+in the overlay.
 
 After editing any of them, run `make apply`. That regenerates
-`gitops/rendered/applicationset.yaml` — a single Argo CD `ApplicationSet`
+`gitops/rendered/<env>/applicationset.yaml` — a single Argo CD `ApplicationSet`
 with one entry per **enabled** component — and applies it. From there Argo CD
 does the real work: it diffs the new list against the cluster and creates,
 upgrades, or deletes child `Application`s to match. No bash script ever
@@ -411,10 +482,34 @@ the vfkit/qemu drivers or on Linux.
 
 ### Deliberately not included
 
-**Falco** (heavy eBPF, can destabilize a VM), **Sealed Secrets** (redundant
-with External Secrets Operator), **OpenTelemetry Collector** (Alloy already
-covers OTLP). Each can be added as a new `gitops/apps/*.yaml` following the
-existing pattern.
+**Falco** (heavy eBPF, can destabilize a VM) and **Sealed Secrets** (redundant
+with External Secrets Operator). Each can be added as a new
+`gitops/apps/*.yaml` following the existing pattern.
+
+(The OpenTelemetry Collector used to be listed here. It is installed now — see
+**What's installed** above.)
+
+### AI agent observability
+
+`examples/genai-agent/` is the worked example for `docs/genai-instrumentation.md`
+— the contract every agent service on this platform implements so that one
+dashboard, one alert rule, and one sampling policy work across all of them.
+
+It runs in `FAKE_LLM=true` mode by default, synthesising responses and token
+counts, so the whole pipeline is exercisable with no API key and no spend.
+
+Prompt and completion capture is off by default and time-boxed when on:
+
+```bash
+make obs-capture ON=true TTL=30m   # auto-reverts; a CronJob enforces the TTL
+make obs-level LEVEL=debug         # 100% tail sampling + debug logs
+make obs-status
+```
+
+Captured content is routed to a separate short-retention Tempo tenant
+(`agents-content`, 7d) rather than the 30-day tenant everyone reads, and is
+deliberately not exposed as a Grafana datasource — Grafana OSS has no
+datasource-level RBAC.
 
 ## Updating versions
 

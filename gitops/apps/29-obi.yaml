@@ -1,0 +1,156 @@
+# OpenTelemetry eBPF Instrumentation (OBI) -- zero-code baseline coverage.
+#
+# NOT the same project as `opentelemetry-ebpf`, which is the older network-flow
+# collector (ex-Flowmill). This is the application auto-instrumentation formerly
+# known as Grafana Beyla, donated to OpenTelemetry. Confusing them gets you a
+# completely different telemetry pipeline.
+#
+# WHAT IT IS FOR: HTTP/gRPC spans and RED metrics for any pod, with no code
+# change, no SDK, and no redeploy. It is the safety net for services nobody
+# instrumented, and a useful cross-check against SDK spans for services that
+# are -- if OBI sees traffic the SDK doesn't report, the instrumentation is
+# lying.
+#
+# WHAT IT IS NOT: a substitute for the GenAI instrumentation in
+# docs/genai-instrumentation.md. OBI emits ZERO gen_ai.* attributes and no
+# token counts. Calls to a model API are TLS; OBI's OpenSSL uprobes may surface
+# the HTTP envelope, never the semantics inside it. Nobody should wire an agent
+# to OBI and wonder where the cost metrics went.
+#
+# FEASIBILITY, verified on this cluster rather than assumed:
+#   kernel 6.12.76-linuxkit, CONFIG_DEBUG_INFO_BTF=y,
+#   /sys/kernel/btf/vmlinux present (6.3 MB)
+# BTF is what lets a single prebuilt binary attach to an arbitrary kernel. On a
+# node without it, OBI will not start.
+#
+# DEFAULT OFF. This is the most invasive component in the platform -- see the
+# security notes below -- so it is opt-in per environment: `make obi`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: obi
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 5, alongside the agent tier it exports to.
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-ebpf-instrumentation
+    targetRevision: ${OBI_CHART_VERSION}
+    helm:
+      releaseName: obi
+      values: |
+        # ---------------------------------------------------------------
+        # SECURITY POSTURE
+        #
+        # privileged: false switches the chart to a least-privilege container:
+        # it drops ALL capabilities and adds back only what eBPF actually
+        # needs -- BPF, PERFMON, SYS_PTRACE, NET_RAW, CHECKPOINT_RESTORE,
+        # DAC_READ_SEARCH (+ NET_ADMIN, added automatically because context
+        # propagation is on) -- with readOnlyRootFilesystem.
+        #
+        # SYS_RESOURCE is deliberately NOT added: it is only needed on kernels
+        # older than 5.11 to raise the locked-memory limit, and this node runs
+        # 6.12.
+        #
+        # What cannot be given up: hostPID and hostNetwork. The chart sets both
+        # unconditionally, because attaching uprobes to other processes
+        # requires seeing them. That is inherent to eBPF instrumentation, not a
+        # chart shortcut, and it is the main thing to weigh before enabling
+        # this in production. The namespace needs a permissive Pod Security
+        # Admission label to accept it.
+        # ---------------------------------------------------------------
+        privileged: false
+
+        # Injects W3C trace context at the kernel level so OBI spans can join
+        # traces started by an instrumented service. This is also what pulls in
+        # NET_ADMIN above -- turn it off if that capability is unacceptable and
+        # you can live with disconnected OBI spans.
+        contextPropagation:
+          enabled: true
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+
+        # Verbosity comes from the same ConfigMap as everything else. OBI reads
+        # OTEL_EBPF_* environment overrides on top of its config file.
+        envValueFrom:
+          OTEL_EBPF_LOG_LEVEL:
+            configMapKeyRef:
+              name: observability-levels
+              key: OBS_COLLECTOR_LOG_LEVEL
+              optional: true
+
+        config:
+          create: true
+          data:
+            # Export to the node-local AGENT, not the gateway. OBI's telemetry
+            # then gets the same k8sattributes enrichment, redaction, and
+            # pre-sampling spanmetrics as everything else.
+            #
+            # NOTE the chart's default is http://${HOST_IP}:4317, which would
+            # NOT work here: the agent is a ClusterIP Service with no hostPort,
+            # so nothing is listening on the node IP. The Service DNS name is
+            # required, and internalTrafficPolicy: Local still keeps the hop
+            # on-node.
+            otel_traces_export:
+              endpoint: http://otel-agent-opentelemetry-collector.otel.svc.cluster.local:4317
+            otel_metrics_export:
+              endpoint: http://otel-agent-opentelemetry-collector.otel.svc.cluster.local:4318
+
+            attributes:
+              kubernetes:
+                enable: true
+
+            # Scoped to the namespace where sample workloads run. Widen
+            # deliberately -- instrumenting every namespace means attaching
+            # probes to the platform's own components.
+            discovery:
+              instrument:
+                - k8s_namespace: default
+              exclude_instrument:
+                # Never instrument the telemetry pipeline with itself. OBI
+                # watching the collector, which forwards OBI's own spans,
+                # is a feedback loop that shows up as unexplained load.
+                - k8s_namespace: otel
+                - k8s_namespace: monitoring
+                - k8s_namespace: tracing
+                - k8s_namespace: logging
+                - k8s_namespace: mimir
+
+            # Network-flow metrics are a different signal with very different
+            # cardinality. Left off; enable only with a specific question in
+            # mind.
+            # network:
+            #   enable: true
+
+            # The chart defaults to exposing a Prometheus endpoint on :9090.
+            # Not used here -- metrics leave via OTLP to the agent, and a
+            # second export path would double-count.
+            prometheus_export: null
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: obi
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # hostPID + hostNetwork cannot pass the `baseline` or `restricted` Pod
+    # Security Admission levels, so this namespace -- and ONLY this one -- is
+    # labelled privileged. Argo owns the label and selfHeal restores it if
+    # something strips it.
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+    syncOptions:
+      - CreateNamespace=true

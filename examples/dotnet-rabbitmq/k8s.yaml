@@ -50,11 +50,22 @@ spec:
       labels:
         app: orderflow-producer
         app.kubernetes.io/part-of: orderflow
+        # Picked up by scripts/12-observability-level.sh's rollout restart --
+        # without this label a level change would update the ConfigMap and
+        # never reach the running process.
+        observability.lab.local/managed: "true"
     spec:
       containers:
         - name: producer
           image: orderflow:1.1.0
           imagePullPolicy: IfNotPresent
+          # Runtime verbosity knobs (sampler, log level, GenAI content
+          # capture). optional: true so the sample still runs on a cluster
+          # where the level control was never installed.
+          envFrom:
+            - configMapRef:
+                name: observability-levels
+                optional: true
           env:
             - name: ROLE
               value: producer
@@ -69,7 +80,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: orderflow-rabbitmq, key: password }
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://otel-collector-opentelemetry-collector.otel.svc:4317
+              value: http://otel-agent-opentelemetry-collector.otel.svc:4317
             - name: OTEL_SERVICE_NAME
               value: orderflow-producer
             # Publishes faster than one consumer can drain (WORK_MS=400), so
@@ -103,11 +114,16 @@ spec:
       labels:
         app: orderflow-consumer
         app.kubernetes.io/part-of: orderflow
+        observability.lab.local/managed: "true"
     spec:
       containers:
         - name: consumer
           image: orderflow:1.1.0
           imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: observability-levels
+                optional: true
           env:
             - name: ROLE
               value: consumer
@@ -122,7 +138,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: orderflow-rabbitmq, key: password }
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://otel-collector-opentelemetry-collector.otel.svc:4317
+              value: http://otel-agent-opentelemetry-collector.otel.svc:4317
             - name: OTEL_SERVICE_NAME
               value: orderflow-consumer
             # Sampling is the SDK default (parentbased_always_on = keep

@@ -43,10 +43,12 @@ METALLB_VERSION|helm|metallb|https://metallb.github.io/metallb|metallb
 EXTERNAL_SECRETS_VERSION|helm|external-secrets|https://charts.external-secrets.io|external-secrets
 KYVERNO_VERSION|helm|kyverno|https://kyverno.github.io/kyverno/|kyverno
 KUBE_PROMETHEUS_STACK_VERSION|helm|prometheus-community|https://prometheus-community.github.io/helm-charts|kube-prometheus-stack
-LOKI_STACK_VERSION|helm|grafana|https://grafana.github.io/helm-charts|loki-stack
-TEMPO_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|tempo
+LOKI_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|loki
+TEMPO_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|tempo-distributed
+MIMIR_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|mimir-distributed
 ALLOY_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|alloy
 OTEL_COLLECTOR_CHART_VERSION|helm|open-telemetry|https://open-telemetry.github.io/opentelemetry-helm-charts|opentelemetry-collector
+OBI_CHART_VERSION|helm|open-telemetry|https://open-telemetry.github.io/opentelemetry-helm-charts|opentelemetry-ebpf-instrumentation
 MINIO_CHART_VERSION|helm|minio|https://charts.min.io/|minio
 VELERO_VERSION|helm|vmware-tanzu|https://vmware-tanzu.github.io/helm-charts|velero
 ARGOCD_CHART_VERSION|helm|argo|https://argoproj.github.io/argo-helm|argo-cd

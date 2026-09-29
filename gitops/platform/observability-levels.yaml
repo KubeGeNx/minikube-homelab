@@ -1,0 +1,185 @@
+# Runtime verbosity control for the observability stack.
+#
+# One ConfigMap, read by three kinds of consumer:
+#   - both collector tiers, via the chart's extraEnvsFrom + ${env:VAR:-default}
+#   - application pods, via envFrom
+#   - OBI, when W7 lands, via envValueFrom
+#
+# THE IMPORTANT PROPERTY: prompt/completion capture cannot be left on by
+# accident. Enabling it stamps an expiry, and a CronJob turns it back off when
+# that expiry passes. An alert saying "someone left capture on" would be
+# reporting a data-exposure incident after the fact; this prevents it instead.
+#
+# Applied by scripts/12-observability-level.sh, which is also what flips the
+# values -- editing this file by hand sets the *defaults* a fresh install
+# starts from, not the live state.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-levels
+  namespace: otel
+  labels:
+    app.kubernetes.io/part-of: observability
+  annotations:
+    observability.lab.local/managed-by: scripts/12-observability-level.sh
+data:
+  # Named profile. Informational -- the individual keys below are what
+  # consumers actually read.
+  OBS_LEVEL: "normal"
+
+  # --- Application SDK knobs (read via envFrom) ---
+  # Head sampling stays permissive on purpose: the gateway's tail_sampling is
+  # what makes the volume affordable, and it can only keep "all errors" if the
+  # SDK actually sent them.
+  OTEL_TRACES_SAMPLER: "parentbased_always_on"
+  OTEL_TRACES_SAMPLER_ARG: "1.0"
+  OTEL_LOG_LEVEL: "info"
+
+  # The standardised GenAI opt-in. false = spans carry token counts, model,
+  # finish reason; the prompt and completion text itself is never attached.
+  OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "false"
+
+  # --- Collector knobs (read via ${env:VAR:-default} in the relay config) ---
+  OBS_TAIL_BASELINE_PERCENTAGE: "10"
+  OBS_COLLECTOR_LOG_LEVEL: "info"
+
+  # RFC3339 timestamp, or empty when capture is off. The CronJob below compares
+  # it against now.
+  OBS_CAPTURE_EXPIRES_AT: ""
+---
+# Who may turn content capture on. Bind this to a human or group deliberately;
+# it is a privileged operation and every write lands in the API server audit
+# log with the caller's identity.
+#
+#   kubectl create clusterrolebinding obs-capture-admin \
+#     --clusterrole=observability-capture-admin --user=<you>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: observability-capture-admin
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["observability-levels"]
+    verbs: ["get", "update", "patch"]
+  # Changing the ConfigMap alone does nothing -- ${env:} expands at process
+  # start -- so whoever can flip it must also be able to restart the readers.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: observability-capture-expiry
+  namespace: otel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: observability-capture-expiry
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["observability-levels"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    # list/watch cannot be restricted by resourceName, and the job needs to
+    # find the ConfigMap across namespaces.
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: observability-capture-expiry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: observability-capture-expiry
+subjects:
+  - kind: ServiceAccount
+    name: observability-capture-expiry
+    namespace: otel
+---
+# The mechanism that makes capture safe to enable. Runs often enough that the
+# worst-case overrun past the requested TTL is a few minutes.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: observability-capture-expiry
+  namespace: otel
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: observability-capture-expiry
+          restartPolicy: OnFailure
+          containers:
+            - name: expire
+              # NOT registry.k8s.io/kubectl: that image is distroless and has
+              # no /bin/sh, so this container cannot start at all --
+              #   exec: "/bin/sh": stat /bin/sh: no such file or directory
+              # A CronJob that fails every 5 minutes would mean capture never
+              # expires, which is precisely the failure this job exists to
+              # prevent, so it is worth stating why the obvious image is wrong.
+              #
+              # Also not bitnami/kubectl: Bitnami moved their Docker Hub
+              # catalogue behind a subscription in Aug 2025 and it no longer
+              # resolves (see gitops/apps/25-rabbitmq.yaml).
+              #
+              # alpine/kubectl has a shell and publishes linux/arm64, which
+              # this cluster needs.
+              image: alpine/kubectl:1.35.1
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                  # Every namespace that has an observability-levels ConfigMap.
+                  ns_list=$(kubectl get configmap --all-namespaces \
+                    --field-selector metadata.name=observability-levels \
+                    -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}')
+                  for ns in $ns_list; do
+                    capture=$(kubectl -n "$ns" get configmap observability-levels \
+                      -o jsonpath='{.data.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT}' || echo false)
+                    [ "$capture" = "true" ] || continue
+                    expires=$(kubectl -n "$ns" get configmap observability-levels \
+                      -o jsonpath='{.data.OBS_CAPTURE_EXPIRES_AT}' || echo "")
+                    # Missing expiry on an enabled capture is treated as
+                    # expired: fail closed, never leave content flowing because
+                    # a field was blank.
+                    if [ -z "$expires" ] || [ "$now" \> "$expires" ]; then
+                      echo "[$ns] capture expired (expires=${expires:-<unset>} now=$now) -- disabling"
+                      kubectl -n "$ns" patch configmap observability-levels --type merge -p \
+                        '{"data":{"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT":"false","OBS_CAPTURE_EXPIRES_AT":"","OBS_LEVEL":"normal"}}'
+                      # A ConfigMap change does not restart anything by itself.
+                      kubectl -n "$ns" rollout restart deployment,daemonset,statefulset \
+                        -l observability.lab.local/managed=true 2>/dev/null || true
+                    else
+                      echo "[$ns] capture on, expires $expires -- leaving alone"
+                    fi
+                  done
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop: ["ALL"]

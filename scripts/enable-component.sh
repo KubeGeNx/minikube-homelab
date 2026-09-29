@@ -16,6 +16,9 @@ flag_of() {
   case "$1" in
     kubeflow) echo "KUBEFLOW_ENABLED" ;;
     olm)      echo "OLM_ENABLED" ;;
+    # One flag, two Applications (otel-gateway + otel-agent), so the
+    # user-facing name isn't a row in COMPONENT_TABLE any more.
+    otel-collector) echo "OTEL_COLLECTOR_ENABLED" ;;
     *)
       # shellcheck disable=SC1091
       source "$SCRIPT_DIR/lib-components.sh"
@@ -28,10 +31,14 @@ flag_of() {
 deps_of() {
   case "$1" in
     envoy-gateway) echo "cert-manager" ;;                          # TLS'd Gateway needs the CA issuer
-    loki-stack)    echo "kube-prometheus-stack" ;;                 # Grafana datasource lives there
-    tempo)         echo "kube-prometheus-stack" ;;                 # same
-    alloy)         echo "kube-prometheus-stack loki-stack tempo" ;; # forwards to all three
+    # All three telemetry backends store blocks in MinIO now, so it is a hard
+    # dependency rather than the optional Velero target it used to be.
+    loki)          echo "kube-prometheus-stack minio" ;;           # Grafana datasource lives there; blocks in MinIO
+    tempo)         echo "kube-prometheus-stack minio" ;;           # same
+    mimir)         echo "kube-prometheus-stack minio" ;;           # same
+    alloy)         echo "kube-prometheus-stack loki mimir" ;;      # ships logs -> Loki, metrics -> Mimir
     otel-collector) echo "tempo" ;;                                # gateway exports traces to it
+    obi)           echo "otel-collector" ;;                       # exports to the node-local agent tier
     rabbitmq)      echo "kube-prometheus-stack" ;;                 # ServiceMonitor CRD
     velero)        echo "minio" ;;                                 # S3 backup target
     gitlab-runner) echo "gitlab" ;;                                # runner registers against it

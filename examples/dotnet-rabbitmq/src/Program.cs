@@ -29,7 +29,7 @@ var host     = Env("RABBITMQ_HOST", "rabbitmq.rabbitmq.svc");
 var user     = Env("RABBITMQ_USER", "homelab");
 var pass     = Env("RABBITMQ_PASS", "HomelabRabbit123!");
 var otlp     = Env("OTEL_EXPORTER_OTLP_ENDPOINT",
-                   "http://otel-collector-opentelemetry-collector.otel.svc:4317");
+                   "http://otel-agent-opentelemetry-collector.otel.svc:4317");
 var service  = Env("OTEL_SERVICE_NAME", $"orderflow-{role}");
 var interval = int.Parse(Env("PUBLISH_INTERVAL_MS", "250"));
 var workMs   = int.Parse(Env("WORK_MS", "400"));

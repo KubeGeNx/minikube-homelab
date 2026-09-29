@@ -1,0 +1,194 @@
+# Grafana Mimir -- long-term, horizontally scalable metrics storage on MinIO.
+#
+# What this does NOT do is replace kube-prometheus-stack. That stack keeps the
+# Prometheus Operator, every ServiceMonitor, kube-state-metrics, node-exporter
+# and Grafana; ripping it out would take all of those with it. What changes is
+# Prometheus's ROLE: it becomes a short-retention scraper that remote-writes
+# here, and Mimir becomes the thing that actually stores history.
+#
+# The otel-agent tier also writes here directly over OTLP, which is what closes
+# the durability gap noted in the plan -- the prometheusremotewrite exporter it
+# used before has a memory-only queue and physically cannot persist across a
+# restart, while otlphttp can be backed by the file_storage extension.
+#
+# MULTITENANCY IS OFF, deliberately, unlike Tempo and Loki. Those two are split
+# into `agents` / `agents-content` because traces and logs carry prompt and
+# completion text. Metrics never do -- a token COUNT is not a token -- so a
+# second tenant would add ceremony to every read and write and protect nothing.
+#
+# The chart bundles its own MinIO subchart and enables it by default. That is
+# switched off below; we have our own (gitops/apps/12-minio.yaml) with scoped
+# per-backend credentials, and running two would be silently confusing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mimir
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: mimir-distributed
+    targetRevision: ${MIMIR_CHART_VERSION}
+    helm:
+      releaseName: mimir
+      values: |
+        # See header. Ours lives in the minio namespace with a scoped `mimir`
+        # user; the bundled one would use root credentials on its own PVC.
+        minio:
+          enabled: false
+
+        # Chart 6.2.0 defaults to Mimir's INGEST-STORAGE architecture, which
+        # routes every write through Kafka before it reaches an ingester, and
+        # ships a single-replica `apache/kafka-native` StatefulSet to do it.
+        # That bundled Kafka is a getting-started convenience: it would sit in
+        # the write path of every metric in the platform as a brand new single
+        # point of failure, which is strictly worse than the classic path it
+        # replaces. Disabled here in favour of the well-trodden zone-aware
+        # architecture (3 ingester zones, replication factor 3).
+        #
+        # Revisit only with a real Kafka (Strimzi, MSK) behind it -- the
+        # architecture is sound, the bundled broker is not.
+        kafka:
+          enabled: false
+
+        mimir:
+          structuredConfig:
+            multitenancy_enabled: false
+
+            # The chart's base config hardcodes this on; structuredConfig
+            # merges over it. Must be false or the ingesters look for a Kafka
+            # broker that no longer exists.
+            ingest_storage:
+              enabled: false
+
+            ingester:
+              # The other half of turning ingest-storage off, and it is NOT
+              # optional. Chart 6.2.0 also hardcodes
+              # `ingester.push_grpc_method_enabled: false`, because with
+              # ingest-storage the write path goes through Kafka and the gRPC
+              # Push method is deliberately closed. Disable ingest-storage
+              # without re-opening Push and every ingester refuses to start:
+              #
+              #   error validating config: cannot disable Push gRPC method in
+              #   ingester, while ingest storage (-ingest-storage.enabled) is
+              #   not enabled
+              #
+              # Found by running it -- the config renders and parses fine, and
+              # `mimirtool`/`-modules` validation passes, because the two
+              # settings are only invalid *in combination* at startup.
+              push_grpc_method_enabled: true
+
+            # One bucket, three prefixes. Mimir refuses to start if blocks,
+            # ruler and alertmanager storage collide, so they are separated by
+            # storage_prefix rather than by provisioning three buckets.
+            common:
+              storage:
+                backend: s3
+                s3:
+                  endpoint: minio.minio.svc:9000
+                  region: us-east-1
+                  bucket_name: mimir
+                  access_key_id: mimir
+                  secret_access_key: HomelabMimirS3Key123!
+                  insecure: true
+
+            blocks_storage:
+              backend: s3
+              storage_prefix: blocks
+              s3:
+                bucket_name: mimir
+            ruler_storage:
+              backend: s3
+              storage_prefix: ruler
+              s3:
+                bucket_name: mimir
+
+            limits:
+              # 30d of history. Compaction enforces it.
+              compactor_blocks_retention_period: 720h
+              # Exemplars default to 0 -- i.e. Mimir accepts them on the wire
+              # and silently throws them away. That failure mode is invisible:
+              # the collector reports exemplars sent, Mimir reports no error,
+              # and Grafana just never shows a dot to click. This is the switch
+              # that makes metric -> trace work at all.
+              max_global_exemplars_per_user: 100000
+              # Headroom for the spanmetrics/servicegraph series the agent
+              # tier produces, which are per service x span name x status.
+              max_global_series_per_user: 1500000
+              ingestion_rate: 100000
+              ingestion_burst_size: 200000
+              # MUST be set explicitly. Mimir's default is FALSE -- verified on
+              # a running cluster, where gen_ai.client.operation.duration (unit
+              # "s") landed as gen_ai_client_operation_duration_count with no
+              # _seconds. Every alert rule and dashboard query written against
+              # the conventional OTLP->Prometheus names would match nothing.
+              #
+              # With this true, names match what the collector's own prometheus
+              # exporter produces, which is what the rules in
+              # gitops/platform/ai-governance-rules.yaml were measured against.
+              otel_metric_suffixes_enabled: true
+              #
+              # NOTE on resource attributes: there is no promote_resource_
+              # attributes limit in Mimir 3.2.0 (verified -- the binary rejects
+              # it as "field not found in type validation.plainLimits"). OTLP
+              # ingest folds resource attributes into the target_info metric,
+              # except service.name/service.namespace which become `job` and
+              # service.instance.id which becomes `instance`. So filtering
+              # spanmetrics by service works out of the box via job=; filtering
+              # by pod or node needs a join against target_info.
+
+            ruler:
+              # Recording and alerting rules evaluate here, but routing stays
+              # with the Alertmanager that kube-prometheus-stack already runs
+              # -- two Alertmanagers means two places to look during an
+              # incident.
+              alertmanager_url: http://kube-prometheus-stack-alertmanager.monitoring.svc:9093
+
+        # kube-prometheus-stack's Alertmanager is the single routing point.
+        alertmanager:
+          enabled: false
+
+        distributor:
+          replicas: 2
+        ingester:
+          replicas: 3
+          persistentVolume:
+            storageClass: standard
+            size: 10Gi
+        querier:
+          replicas: 2
+        query_frontend:
+          replicas: 1
+        store_gateway:
+          replicas: 1
+          persistentVolume:
+            storageClass: standard
+            size: 10Gi
+        compactor:
+          replicas: 1
+          persistentVolume:
+            storageClass: standard
+            size: 10Gi
+        ruler:
+          replicas: 1
+
+        # nginx in front of the read/write paths -- the single endpoint the
+        # collector, Prometheus remote-write, and Grafana all talk to.
+        gateway:
+          enabledNonEnterprise: true
+          replicas: 2
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mimir
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

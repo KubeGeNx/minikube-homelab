@@ -34,6 +34,40 @@ def parse_env_file(text):
     return values
 
 
+def load_env_layered(root_dir, env_name, filename):
+    """Repo-root <filename> is the base; environments/<env>/<filename> overrides
+    it key by key. An environment therefore only has to list what actually
+    differs from the base -- a prod overlay that pins two chart versions is two
+    lines, not a copy of the whole file."""
+    values = {}
+    base_path = os.path.join(root_dir, filename)
+    if os.path.isfile(base_path):
+        with open(base_path) as f:
+            values.update(parse_env_file(f.read()))
+    overlay_path = os.path.join(root_dir, "environments", env_name, filename)
+    if os.path.isfile(overlay_path):
+        with open(overlay_path) as f:
+            values.update(parse_env_file(f.read()))
+    return values
+
+
+def deep_merge(base, overlay):
+    """Overlay wins. Dicts merge recursively; every other type -- lists
+    included -- replaces outright, matching Helm's own `-f` semantics.
+
+    A null in the overlay is preserved as a null rather than deleting the key,
+    because null is meaningful in the merged output: Helm removes a chart
+    default whose override value is null (see the `metrics: null` in
+    gitops/apps/*-otel-*.yaml). Treating it as a delete here would silently
+    reinstate the chart default we were trying to drop."""
+    if not isinstance(base, dict) or not isinstance(overlay, dict):
+        return overlay
+    merged = dict(base)
+    for key, value in overlay.items():
+        merged[key] = deep_merge(merged[key], value) if key in merged else value
+    return merged
+
+
 def substitute(s, versions, filename):
     """Replace ${VAR} from versions.env; unknown VARs are a hard error --
     a silently-unresolved placeholder would otherwise ship a literal
@@ -53,14 +87,53 @@ def substitute(s, versions, filename):
     return re.sub(r"\$\{([A-Z_]+)\}", lambda m: versions[m.group(1)], s)
 
 
+def apply_values_overlay(values_str, env_dir, app, versions):
+    """Deep-merge environments/<env>/values/<component>.yaml over the base values
+    from gitops/apps/<file>.yaml.
+
+    Argo CD's source here is a chart repo rather than git, so `helm.valueFiles`
+    can't reach a path in this repo -- merging in the builder is the seam that
+    actually exists, and it already owns the ${VAR} substitution pass.
+
+    With no overlay present the base string is returned untouched, so the
+    rendered output stays byte-identical to the pre-overlay behaviour and keeps
+    the base file's comments. Merging has to round-trip through PyYAML, which
+    drops them."""
+    overlay_path = os.path.join(env_dir, "values", f"{app}.yaml")
+    if not os.path.isfile(overlay_path):
+        return values_str
+
+    with open(overlay_path) as f:
+        overlay_raw = substitute(f.read(), versions, overlay_path)
+
+    merged = deep_merge(yaml.safe_load(values_str) or {}, yaml.safe_load(overlay_raw) or {})
+    print(f"    overlay: environments/.../values/{app}.yaml")
+    return yaml.dump(merged, default_flow_style=False, sort_keys=False)
+
+
 def main():
     root_dir = os.environ["ROOT_DIR"]
     apps_dir = os.path.join(root_dir, "gitops", "apps")
     out_file = os.environ["OUT_FILE"]
 
+    # One environment per cluster. The ApplicationSet keeps the name "platform"
+    # in every environment -- renaming it per-env would orphan the existing
+    # "platform" ApplicationSet (and its children) on an already-running
+    # cluster. The environment is recorded as a label instead.
+    env_name = os.environ.get("ENV", "dev")
+    env_dir = os.path.join(root_dir, "environments", env_name)
+    if not os.path.isdir(env_dir):
+        print(
+            f"ERROR: unknown environment '{env_name}' -- {env_dir} does not exist.\n"
+            f"       Available: {', '.join(sorted(d.name for d in os.scandir(os.path.join(root_dir, 'environments')) if d.is_dir())) or '(none)'}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"  environment: {env_name}")
+
     component_table = os.environ["COMPONENT_TABLE"]
-    versions = parse_env_file(open(os.path.join(root_dir, "versions.env")).read())
-    components = parse_env_file(open(os.path.join(root_dir, "components.env")).read())
+    versions = load_env_layered(root_dir, env_name, "versions.env")
+    components = load_env_layered(root_dir, env_name, "components.env")
 
     elements = []
     for line in component_table.strip().splitlines():
@@ -92,7 +165,12 @@ def main():
                 "chart": src["chart"],
                 "targetRevision": substitute(src["targetRevision"], versions, filename),
                 "releaseName": helm.get("releaseName", app),
-                "values": substitute(helm.get("values", ""), versions, filename),
+                "values": apply_values_overlay(
+                    substitute(helm.get("values", ""), versions, filename),
+                    env_dir,
+                    app,
+                    versions,
+                ),
             }
         except (KeyError, TypeError) as exc:
             print(
@@ -114,6 +192,7 @@ def main():
         "metadata": {
             "name": "platform",
             "namespace": "argocd",
+            "labels": {"platform-env": env_name},
         },
         "spec": {
             "goTemplate": True,
@@ -161,7 +240,10 @@ def main():
     with open(out_file, "w") as f:
         f.write(
             "# GENERATED by scripts/build-applicationset.py -- do not edit by hand.\n"
-            "# Source of truth: gitops/apps/*.yaml + versions.env + components.env.\n"
+            f"# Environment: {env_name}\n"
+            "# Source of truth: gitops/apps/*.yaml + versions.env + components.env,\n"
+            "# overlaid by environments/<env>/{versions,components}.env and\n"
+            "# environments/<env>/values/<component>.yaml.\n"
         )
         yaml.dump(applicationset, f, default_flow_style=False, sort_keys=False, width=100)
 

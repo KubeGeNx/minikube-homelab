@@ -29,7 +29,10 @@ fi
 
 export ROOT_DIR
 export COMPONENT_TABLE
-export OUT_FILE="$ROOT_DIR/gitops/rendered/applicationset.yaml"
+# One rendered ApplicationSet per environment. ENV selects which overlay in
+# environments/<env>/ is applied on top of the repo-root base files.
+export ENV="${ENV:-dev}"
+export OUT_FILE="$ROOT_DIR/gitops/rendered/$ENV/applicationset.yaml"
 
-echo "Building platform ApplicationSet from gitops/apps/*.yaml + versions.env + components.env..."
+echo "Building platform ApplicationSet (ENV=$ENV) from gitops/apps/*.yaml + base env files + environments/$ENV/..."
 python3 "$SCRIPT_DIR/build-applicationset.py"

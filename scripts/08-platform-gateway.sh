@@ -9,9 +9,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib-components.sh"
+ENV="${ENV:-dev}"
 set -a
 # shellcheck disable=SC1090
 source "$ROOT_DIR/components.env"
+# Environment overlay on top of the base, matching build-applicationset.py's
+# layering -- otherwise a component disabled only in this environment would
+# still get an HTTPRoute applied for it.
+if [ -f "$ROOT_DIR/environments/$ENV/components.env" ]; then
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/environments/$ENV/components.env"
+fi
 set +a
 
 if ! kubectl get crd clusterissuers.cert-manager.io >/dev/null 2>&1; then
@@ -25,6 +33,23 @@ kubectl apply -f "$ROOT_DIR/gitops/platform/cluster-issuers.yaml"
 
 echo "Applying shared platform Gateway + *.lab.local wildcard Certificate..."
 kubectl apply -f "$ROOT_DIR/gitops/platform/gateway.yaml"
+
+
+# --- Admission policy for AI/agent workloads ---
+# Audit mode by default: reports, no blocking. `kubectl get clusterpolicyreport`
+# shows violations. Flip validationFailureAction to Enforce in
+# gitops/policies/ai-workload-policies.yaml once those reports are clean.
+if is_component_enabled "KYVERNO_ENABLED"; then
+  if kubectl get crd clusterpolicies.kyverno.io >/dev/null 2>&1; then
+    echo "Applying AI-workload ClusterPolicies (Audit mode)..."
+    kubectl apply -f "$ROOT_DIR/gitops/policies/ai-workload-policies.yaml"
+  else
+    echo "Kyverno enabled but its CRDs aren't registered yet -- skipping policies."
+    echo "  Re-run this script once 'kubectl get pods -n kyverno' is Ready."
+  fi
+else
+  kubectl delete -f "$ROOT_DIR/gitops/policies/ai-workload-policies.yaml" --ignore-not-found >/dev/null 2>&1 || true
+fi
 
 # route file -> flag guarding it (route is applied only when its backend
 # component is enabled; argocd is always installed by bootstrap).

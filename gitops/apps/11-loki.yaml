@@ -1,0 +1,171 @@
+# Grafana Loki 3.x, simple-scalable, on object storage.
+#
+# Replaces the `loki-stack` chart, which is DEPRECATED upstream and was still
+# shipping Loki 2.6.1 here -- three years stale. The decisive problem was not
+# age though: Loki 2.x has no native OTLP endpoint. GenAI prompt/completion
+# content is emitted as OTLP log records (that is where the semantic
+# conventions put it, precisely so it can be toggled), and there was nowhere
+# for those records to land.
+#
+# Loki 3 gives two things this platform needs:
+#   - /otlp/v1/logs, so the collector can export logs directly.
+#   - structured metadata, which is how trace_id/span_id attach to a log line
+#     WITHOUT becoming labels. As labels they would multiply the stream count
+#     by the number of traces, which is the classic way to melt Loki.
+#
+# auth_enabled: true turns on multitenancy. X-Scope-OrgID becomes mandatory on
+# every read and write -- Alloy sets it when shipping pod logs, Grafana sets it
+# per datasource. Same two tenants as Tempo: `agents` at 30d, `agents-content`
+# at 7d.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki
+    targetRevision: ${LOKI_CHART_VERSION}
+    helm:
+      releaseName: loki
+      values: |
+        deploymentMode: SimpleScalable
+
+        loki:
+          # Multitenancy. Despite the name this is not authentication -- Loki
+          # trusts the X-Scope-OrgID header; it is tenant SEPARATION, and the
+          # actual access control is Grafana's RBAC over the datasources (W4).
+          auth_enabled: true
+
+          # Loki 3 refuses to start without an explicit schema. tsdb + v13 is
+          # the only combination that supports structured metadata, which is
+          # the whole reason for this migration.
+          schemaConfig:
+            configs:
+              - from: "2024-04-01"
+                store: tsdb
+                object_store: s3
+                schema: v13
+                index:
+                  prefix: loki_index_
+                  period: 24h
+
+          storage:
+            type: s3
+            bucketNames:
+              chunks: loki
+              ruler: loki
+              admin: loki
+            s3:
+              endpoint: http://minio.minio.svc:9000
+              region: us-east-1
+              accessKeyId: loki
+              secretAccessKey: HomelabLokiS3Key123!
+              # MinIO needs path-style addressing; virtual-host style expects
+              # bucket.host DNS that in-cluster MinIO does not serve.
+              s3ForcePathStyle: true
+              insecure: true
+
+          limits_config:
+            retention_period: 720h
+            # Required for trace_id/span_id as structured metadata.
+            allow_structured_metadata: true
+            volume_enabled: true
+            # OTLP log records arrive with resource attributes; without a
+            # raised limit the long ones get dropped.
+            max_line_size: 256kb
+            ingestion_rate_mb: 16
+            ingestion_burst_size_mb: 32
+
+          # Retention only actually happens if the compactor is told to do it.
+          # Setting retention_period alone silently keeps everything forever,
+          # which for the content tenant would defeat the whole policy.
+          compactor:
+            retention_enabled: true
+            delete_request_store: s3
+
+          # Per-tenant overrides. The content tenant is cut to 7d.
+          runtimeConfig:
+            overrides:
+              agents-content:
+                retention_period: 168h
+
+        write:
+          replicas: 2
+          persistence:
+            storageClass: standard
+            size: 10Gi
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+
+        read:
+          replicas: 2
+          persistence:
+            storageClass: standard
+            size: 10Gi
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+
+        backend:
+          replicas: 2
+          persistence:
+            storageClass: standard
+            size: 10Gi
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+
+        # nginx in front of read/write; this is the single endpoint clients
+        # talk to, and what Alloy and Grafana are pointed at.
+        gateway:
+          enabled: true
+          replicas: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+
+        # The chart defaults chunksCache to 8Gi of memcached, which is a
+        # production-cluster number and would not schedule here.
+        chunksCache:
+          enabled: true
+          allocatedMemory: 2048
+        resultsCache:
+          enabled: true
+
+        # Synthetic log producer used to measure Loki's own health. Useful,
+        # but it writes to a tenant of its own and adds noise -- revisit with
+        # the meta-monitoring workstream rather than enabling it by default.
+        lokiCanary:
+          enabled: false
+        test:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,0 +1,99 @@
+# GenAI agent sample -- the worked example for docs/genai-instrumentation.md.
+#
+# Runs in FAKE_LLM mode by default: it synthesises responses and token counts,
+# so the whole observability pipeline is exercisable with no API key and no
+# spend. Flip FAKE_LLM to "false" and supply a key to make real calls.
+#
+# There is no registry in this cluster, so the image must exist in the node's
+# own daemon and imagePullPolicy must be IfNotPresent:
+#   eval $(minikube -p homelab docker-env)
+#   docker build -t genai-agent:1.0.0 examples/genai-agent/src
+#
+#   kubectl apply -f examples/genai-agent/k8s.yaml
+#
+# Prereqs: otel-collector (both tiers), tempo, mimir -- `make otel-collector`
+# pulls the chain in.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genai-agent
+  namespace: default
+  labels:
+    app: genai-agent
+    app.kubernetes.io/part-of: ai-agent
+    # MUST be on the Deployment itself, not only on the pod template below.
+    # `kubectl rollout restart deployment -l <selector>` matches DEPLOYMENT
+    # labels; a label that exists only under spec.template is invisible to it.
+    # Without this the level/capture toggle updates the ConfigMap, reports
+    # success, restarts the collectors -- and never restarts the application,
+    # so the new setting never reaches the process that reads it.
+    observability.lab.local/managed: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genai-agent
+  template:
+    metadata:
+      labels:
+        app: genai-agent
+        # W8's Kyverno policy will require this label to carry an owner and an
+        # OTLP endpoint -- an agent nobody can trace does not get to run.
+        app.kubernetes.io/part-of: ai-agent
+        app.kubernetes.io/owner: platform-team
+        # Makes scripts/12-observability-level.sh restart this pod when the
+        # level or capture setting changes. Without the label the ConfigMap
+        # would change and this process would keep its old values, because
+        # env is read once at start.
+        observability.lab.local/managed: "true"
+    spec:
+      containers:
+        - name: agent
+          image: genai-agent:1.0.0
+          imagePullPolicy: IfNotPresent
+          # Runtime verbosity knobs: sampler, log level, and the GenAI content
+          # capture switch. optional so the sample still runs on a cluster
+          # where scripts/12-observability-level.sh was never run.
+          envFrom:
+            - configMapRef:
+                name: observability-levels
+                optional: true
+          env:
+            # The AGENT DaemonSet, not the gateway. internalTrafficPolicy:
+            # Local means this resolves to the collector on this pod's own
+            # node, which is the only place k8sattributes can identify the pod
+            # from the connection's source IP.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-agent-opentelemetry-collector.otel.svc:4317
+            - name: OTEL_SERVICE_NAME
+              value: genai-agent
+            # No key needed, no requests billed. Set to "false" only after
+            # creating the secret below (scripts/13-genai-agent-secret.sh).
+            - name: FAKE_LLM
+              value: "true"
+            - name: MODEL
+              value: claude-opus-5
+            - name: REQUEST_INTERVAL_S
+              value: "15"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: genai-agent-model-provider
+                  key: ANTHROPIC_API_KEY
+                  # Optional so FAKE_LLM mode runs without the secret existing.
+                  # With FAKE_LLM=false and no secret the SDK falls back to its
+                  # own credential resolution and will fail loudly, which is
+                  # the right outcome.
+                  optional: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]

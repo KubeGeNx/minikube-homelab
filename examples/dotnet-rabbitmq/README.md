@@ -65,14 +65,28 @@ you get two disconnected single-span traces instead — which is what most
 ## Where the spans go
 
 ```
-app ──OTLP/gRPC──► otel-collector-opentelemetry-collector.otel.svc:4317
-                     └─ memory_limiter → k8s_attributes → batch
-                          └──► tempo.tracing.svc:4317
+app ──OTLP/gRPC──► otel-agent-opentelemetry-collector.otel.svc:4317   (TIER 1, this node)
+                     └─ memory_limiter → k8s_attributes → resourcedetection
+                          → redaction → batch
+                          ├──► spanmetrics + servicegraph ──► Prometheus
+                          └──► loadbalancing (routing_key: traceID)
+                                 └──► otel-gateway ... :4317          (TIER 2, mTLS)
+                                        └─ tail_sampling
+                                             └──► tempo-distributor.tracing.svc:4317
 ```
 
-The gateway's `k8s_attributes` processor decorates every span with pod,
-namespace, node and deployment names before forwarding, so you can filter by
-Kubernetes metadata in Tempo without the app knowing anything about it.
+Two things about that first hop are easy to miss:
+
+**It resolves to this node.** The chart sets `internalTrafficPolicy: Local` on
+a DaemonSet's Service, so that one DNS name always reaches the agent on the
+pod's own node. No hostPort, no downward-API node IP in the manifest.
+
+**Enrichment has to happen there, not later.** `k8s_attributes` identifies the
+workload from the connection's source IP. One hop further on, that source IP is
+the agent's, and every span would be labelled with the agent's own pod.
+
+The span metrics are derived in tier 1 *before* tier 2 samples, so RED metrics
+count real traffic rather than the surviving 10%.
 
 View them in Grafana → **Explore** → **Tempo** → **TraceQL**:
 

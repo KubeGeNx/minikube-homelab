@@ -1,0 +1,19 @@
+# dev: minikube is one node, so distributed MinIO (which needs >=4 replicas
+# with real separate disks to mean anything) buys nothing here and costs 8
+# PVCs. Standalone is the honest dev shape.
+#
+# The buckets / policies / users from the base file are NOT overridden -- dev
+# provisions the same four buckets with the same scoped credentials, so the
+# backends' storage config is identical across environments and a
+# works-in-dev-fails-in-prod credential bug can't hide.
+mode: standalone
+replicas: 1
+drivesPerNode: 1
+persistence:
+  size: 20Gi
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

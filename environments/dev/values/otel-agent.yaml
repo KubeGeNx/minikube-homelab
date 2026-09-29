@@ -1,0 +1,7 @@
+# dev sizing for the agent tier. One node, so one agent.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

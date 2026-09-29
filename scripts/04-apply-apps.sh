@@ -13,15 +13,35 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-APPLICATIONSET_FILE="$ROOT_DIR/gitops/rendered/applicationset.yaml"
+# ENV selects the environment overlay (environments/<env>/). One environment
+# per cluster; "dev" is the minikube profile of the same architecture.
+# Exported so build-applicationset.sh and 08-platform-gateway.sh resolve the
+# same overlay this script did.
+export ENV="${ENV:-dev}"
+if [ ! -d "$ROOT_DIR/environments/$ENV" ]; then
+  echo "ERROR: unknown environment '$ENV' -- $ROOT_DIR/environments/$ENV does not exist."
+  exit 1
+fi
+APPLICATIONSET_FILE="$ROOT_DIR/gitops/rendered/$ENV/applicationset.yaml"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib-components.sh"
+# Base first, then the environment overlay on top -- same layering
+# build-applicationset.py does, so this script's enabled/disabled decisions
+# (namespaces, HTTPRoutes, kubeflow) agree with what actually got rendered.
 set -a
 # shellcheck disable=SC1090
 source "$ROOT_DIR/components.env"
 # shellcheck disable=SC1090
 source "$ROOT_DIR/versions.env"
+if [ -f "$ROOT_DIR/environments/$ENV/components.env" ]; then
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/environments/$ENV/components.env"
+fi
+if [ -f "$ROOT_DIR/environments/$ENV/versions.env" ]; then
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/environments/$ENV/versions.env"
+fi
 set +a
 
 echo "Applying namespaces for enabled components only..."
@@ -71,6 +91,26 @@ bash "$SCRIPT_DIR/build-applicationset.sh"
 
 echo "Applying platform ApplicationSet (this is the parent that owns every child Application)..."
 kubectl apply -f "$APPLICATIONSET_FILE"
+
+# --- Collector mTLS certificates ---
+# THIS MUST RUN BEFORE wait_healthy, and the reason is a deadlock found by
+# actually installing: both collector tiers mount otel-{agent,gateway}-tls, so
+# their pods sit in ContainerCreating with "secret not found" until these
+# Certificates exist. wait_healthy then blocks forever waiting for
+# Applications that cannot become Healthy, and the step that creates the
+# certificates never gets to run. It does NOT resolve itself.
+#
+# Only needs cert-manager's CRDs, which is why it can run this early.
+if is_component_enabled "OTEL_COLLECTOR_ENABLED" && is_component_enabled "CERT_MANAGER_ENABLED"; then
+  if kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+    echo "Applying OpenTelemetry collector mTLS Certificates (otel namespace)..."
+    kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    kubectl apply -f "$ROOT_DIR/gitops/platform/otel-mtls.yaml"
+  else
+    echo "cert-manager CRDs not present yet -- collector mTLS certs deferred."
+    echo "  The collector pods will wait on their secrets; re-run this script."
+  fi
+fi
 
 # --- Special (non-Helm) components ---
 # Kubeflow doesn't fit the ApplicationSet's Helm-chart template (it's a
@@ -177,6 +217,30 @@ if is_component_enabled "ENVOY_GATEWAY_ENABLED" && is_component_enabled "CERT_MA
   echo ""
   echo "--- Applying platform Gateway + TLS + HTTPRoutes (scripts/08-platform-gateway.sh) ---"
   bash "$SCRIPT_DIR/08-platform-gateway.sh"
+fi
+
+# --- Observability verbosity control (ConfigMap + RBAC + expiry CronJob) ---
+# Installs the DEFAULTS only; it never overwrites a live value, so re-running
+# this script does not silently disable a capture window someone opened.
+if is_component_enabled "OTEL_COLLECTOR_ENABLED"; then
+  echo ""
+  echo "--- Observability level control (scripts/12-observability-level.sh) ---"
+  bash "$SCRIPT_DIR/12-observability-level.sh" install ||     echo "  WARNING: level control not installed -- re-run scripts/12-observability-level.sh install"
+fi
+
+# --- AI governance rules (cost, refusals, tool failures) ---
+# These go into MIMIR's ruler, not Prometheus: the gen_ai_* metrics are pushed
+# over OTLP and Prometheus never sees them, so a PrometheusRule would evaluate
+# an empty series set and stay green forever. The CronJob in the manifest syncs
+# them from a ConfigMap every 15 minutes.
+if is_component_enabled "MIMIR_ENABLED"; then
+  echo ""
+  echo "--- AI governance rules (Mimir ruler) ---"
+  kubectl apply -f "$ROOT_DIR/gitops/platform/ai-governance-rules.yaml"
+  echo "  rules sync runs every 15m; force one now with:"
+  echo "    kubectl -n mimir create job --from=cronjob/mimir-rules-loader rules-sync-now"
+else
+  kubectl delete -f "$ROOT_DIR/gitops/platform/ai-governance-rules.yaml" --ignore-not-found >/dev/null 2>&1 || true
 fi
 
 echo ""

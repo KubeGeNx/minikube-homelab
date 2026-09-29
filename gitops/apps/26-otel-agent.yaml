@@ -1,0 +1,353 @@
+# OpenTelemetry Collector -- TIER 1: per-node agent (DaemonSet).
+#
+# Applications send OTLP here, not to the gateway. The chart sets
+# `internalTrafficPolicy: Local` on the Service for mode=daemonset, so one
+# stable DNS name resolves to the agent on the pod's OWN node -- no hostPort,
+# no downward-API node IP in every workload:
+#
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-agent-opentelemetry-collector.otel.svc:4317
+#
+# Three jobs, in this order, and the order is the design:
+#
+#  1. ENRICH. k8sattributes resolves the pod from the connection's source IP.
+#     That only works here -- one hop later the connection comes from the agent
+#     and every span would be attributed to the agent's own pod.
+#
+#  2. REDACT. Prompt/completion content is scrubbed on the node it was produced
+#     on, before it crosses any network boundary. See W8 in the plan: this is
+#     what makes the content-capture toggle defensible rather than reckless.
+#
+#  3. DERIVE, THEN FORWARD. spanmetrics and servicegraph run HERE, in front of
+#     the sampler, so they see 100% of spans. Putting them behind the gateway's
+#     tail_sampling would make every RED metric report ~10% of real traffic and
+#     silently understate error rates -- the most expensive kind of wrong,
+#     because the dashboards still look plausible.
+#
+# Traces then leave via the loadbalancing exporter keyed on trace ID, which is
+# what lets the gateway tail-sample coherently (27-otel-gateway.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-agent
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 5: the loadbalancing exporter resolves the gateway's endpoints, so
+    # the gateway (wave 4) has to exist first.
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-collector
+    targetRevision: ${OTEL_COLLECTOR_CHART_VERSION}
+    helm:
+      releaseName: otel-agent
+      values: |
+        mode: daemonset
+        image:
+          repository: otel/opentelemetry-collector-contrib
+        command:
+          name: otelcol-contrib
+
+        presets:
+          # Creates the ClusterRole this needs to read pod metadata.
+          kubernetesAttributes:
+            enabled: true
+          # resourceDetection preset is NOT used, even though the processor is:
+          # the preset PREPENDS resourcedetection/env to every pipeline, which
+          # pushes memory_limiter out of first position. memory_limiter has to
+          # run first to shed load by refusing data before anything downstream
+          # buffers it. The processor is declared explicitly below instead, in
+          # the position we actually want.
+          # DELIBERATELY OFF -- each of these would double-ship against
+          # something already collecting it:
+          #   logsCollection  -> Grafana Alloy owns pod logs -> Loki
+          #                      (gitops/apps/05-alloy.yaml). Loki 3 now HAS a
+          #                      native OTLP endpoint, so moving log collection
+          #                      here is possible -- but it is a swap, not an
+          #                      addition: enable this only in the same change
+          #                      that removes Alloy's loki.source.kubernetes.
+          #   hostMetrics     -> kube-prometheus-stack's node-exporter.
+          #   kubeletMetrics  -> kube-prometheus-stack scrapes the kubelet.
+          # Enabling one without retiring its counterpart gives two series for
+          # the same thing and a Grafana panel that reads double.
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 768Mi
+
+        # The k8s resolver in the loadbalancing exporter reads the gateway's
+        # EndpointSlices from the API server to learn its pod IPs. The
+        # kubernetesAttributes preset's ClusterRole does not cover that.
+        clusterRole:
+          create: true
+          rules:
+            - apiGroups: [""]
+              resources: ["endpoints"]
+              verbs: ["list", "watch", "get"]
+            - apiGroups: ["discovery.k8s.io"]
+              resources: ["endpointslices"]
+              verbs: ["list", "watch", "get"]
+
+        # kubelet creates a DirectoryOrCreate hostPath as root:root 0755, but
+        # the collector image runs as UID 10001, so it cannot write its queue:
+        #
+        #   Error: cannot start pipelines: failed to start "otlp_http/mimir"
+        #   exporter: open /var/lib/otelcol/queue/... : permission denied
+        #
+        # Found by installing -- config rendering and `validate` both pass,
+        # because this is a filesystem-ownership problem, not a config one.
+        # The chart's own values file anticipates it with a commented
+        # `chown -R 10001:` example.
+        initContainers:
+          - name: queue-permissions
+            image: busybox:1.36
+            command:
+              - sh
+              - -c
+              - mkdir -p /var/lib/otelcol/queue && chown -R 10001:10001 /var/lib/otelcol/queue
+            securityContext:
+              runAsUser: 0
+            volumeMounts:
+              - name: queue
+                mountPath: /var/lib/otelcol/queue
+
+        extraVolumeMounts:
+          - name: queue
+            mountPath: /var/lib/otelcol/queue
+          - name: tls
+            mountPath: /etc/otel/tls
+            readOnly: true
+        extraVolumes:
+          # A DaemonSet has no volumeClaimTemplate. hostPath keeps the queue
+          # across pod restarts on the same node, which is the failure this
+          # protects against; a node loss loses the buffer either way.
+          - name: queue
+            hostPath:
+              path: /var/lib/otelcol-agent-queue
+              type: DirectoryOrCreate
+          - name: tls
+            secret:
+              # Issued by gitops/platform/otel-mtls.yaml off homelab-ca.
+              secretName: otel-agent-tls
+
+        extraEnvsFrom:
+          - configMapRef:
+              name: observability-levels
+              optional: true
+
+        # REQUIRED for mode: daemonset. The chart creates a Service by default
+        # only when mode != daemonset -- on a DaemonSet it must be asked for
+        # explicitly. Without it the agent listens on 4317/4318 inside its pod
+        # and there is no DNS name to reach it by, so every application gets
+        # StatusCode.UNAVAILABLE and the whole node-local endpoint design
+        # (documented in docs/genai-instrumentation.md) silently does not
+        # exist. Found by installing; nothing in rendering flags a missing
+        # Service.
+        #
+        # Once created, the chart sets internalTrafficPolicy: Local on it for
+        # daemonset mode, which is what keeps the hop on the pod's own node.
+        service:
+          enabled: true
+
+        ports:
+          otlp:
+            enabled: true
+          otlp-http:
+            enabled: true
+          jaeger-compact:
+            enabled: false
+          jaeger-thrift:
+            enabled: false
+          jaeger-grpc:
+            enabled: false
+          zipkin:
+            enabled: false
+
+        config:
+          extensions:
+            file_storage:
+              directory: /var/lib/otelcol/queue
+              # Without this the collector refuses to start when the directory
+              # is absent, turning a volume mistake into a crash loop.
+              create_directory: true
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+          processors:
+            memory_limiter:
+              check_interval: 5s
+              limit_percentage: 80
+              spike_limit_percentage: 25
+            batch:
+              timeout: 5s
+              send_batch_size: 1024
+            resourcedetection:
+              detectors: [env, system]
+              system:
+                hostname_sources: [os]
+              timeout: 5s
+              override: false
+            redaction:
+              # allow_all_keys: attributes pass through by default and we block
+              # what must not survive. The inverse (allow-list only) would strip
+              # k8s.*, service.*, and gen_ai.* and break every correlation in
+              # the platform, so it is not the safer-looking option it appears.
+              allow_all_keys: true
+              # Keys never redacted, checked before the block patterns below.
+              # gen_ai.usage.*_tokens are TOKEN COUNTS, not credentials, and a
+              # naive ".*token.*" pattern masks them -- which was the original
+              # bug here. Caught on a running cluster: the redaction summary
+              # attribute listed them as masked, meaning the tail-sampling
+              # policy on gen_ai.usage.output_tokens > 4000 could never match
+              # and every cost figure was blank.
+              ignored_keys:
+                - gen_ai.usage.input_tokens
+                - gen_ai.usage.output_tokens
+                - gen_ai.request.max_tokens
+              blocked_key_patterns:
+                - "(?i).*authorization.*"
+                - "(?i).*api[_-]?key.*"
+                - "(?i).*secret.*"
+                - "(?i).*password.*"
+                - "(?i).*credential.*"
+                # Scoped to credential-shaped token names rather than the bare
+                # word: "token" appears in plenty of innocent attributes.
+                - "(?i).*(access|auth|bearer|refresh|session|id)[_-]?token.*"
+                - "(?i)^token$"
+              blocked_values:
+                # Anthropic / OpenAI style keys, emails, card-shaped digits.
+                - "sk-ant-[A-Za-z0-9_\\-]{16,}"
+                - "sk-[A-Za-z0-9]{20,}"
+                - "[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}"
+                - "\\b(?:\\d[ \\-]*?){13,16}\\b"
+              summary: debug
+          connectors:
+            # PRE-SAMPLING. See the header: these must never sit behind the
+            # gateway's tail_sampling.
+            spanmetrics:
+              namespace: traces.span.metrics
+              histogram:
+                unit: s
+                explicit:
+                  buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s, 30s]
+              # Every dimension multiplies series count. These are bounded.
+              # Never add a request id, user id, or prompt hash here.
+              dimensions:
+                - name: gen_ai.system
+                - name: gen_ai.request.model
+                - name: gen_ai.operation.name
+              exemplars:
+                enabled: true
+              metrics_flush_interval: 15s
+              metrics_expiration: 5m
+            servicegraph:
+              # Produces traces_service_graph_request_* -- what Grafana's
+              # service map reads. spanmetrics alone does NOT provide it.
+              latency_histogram_buckets: [100ms, 250ms, 500ms, 1s, 2s, 5s, 10s, 30s]
+              store:
+                ttl: 5s
+                max_items: 20000
+          exporters:
+            loadbalancing:
+              # routing_key traceID is the contract with the gateway's
+              # tail_sampling: all spans of a trace must land on one pod.
+              routing_key: traceID
+              protocol:
+                otlp:
+                  tls:
+                    ca_file: /etc/otel/tls/ca.crt
+                    cert_file: /etc/otel/tls/tls.crt
+                    key_file: /etc/otel/tls/tls.key
+                    # The k8s resolver hands this exporter raw POD IPs from
+                    # EndpointSlices -- it never dials the Service name. TLS
+                    # then tries to verify the certificate against an IP:
+                    #
+                    #   x509: cannot validate certificate for 10.244.3.63
+                    #   because it doesn't contain any IP SANs
+                    #
+                    # Adding IP SANs is not an option: pod IPs are assigned at
+                    # schedule time and change on every restart. Instead, pin
+                    # the name TLS verifies against to one the gateway's
+                    # certificate actually carries. The connection still goes
+                    # to the pod IP; only the identity check uses this name.
+                    server_name_override: otel-gateway-opentelemetry-collector.otel.svc.cluster.local
+                  sending_queue:
+                    enabled: true
+                    storage: file_storage
+                    num_consumers: 10
+                    queue_size: 5000
+                  retry_on_failure:
+                    enabled: true
+              resolver:
+                k8s:
+                  service: otel-gateway-opentelemetry-collector.otel
+                  ports: [4317]
+            otlphttp/mimir:
+              # Mimir ingests OTLP natively at /otlp/v1/metrics; the otlphttp
+              # exporter appends /v1/metrics to this endpoint.
+              #
+              # This replaced prometheusremotewrite, and the reason is
+              # durability rather than taste: that exporter rejects the
+              # standard `sending_queue` key and its own remote_write_queue is
+              # memory-only, so a collector restart silently dropped whatever
+              # it held. otlphttp takes a file_storage-backed queue, which puts
+              # the metrics path on the same footing as traces.
+              endpoint: http://mimir-gateway.mimir.svc/otlp
+              sending_queue:
+                enabled: true
+                storage: file_storage
+                num_consumers: 10
+                queue_size: 10000
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+          service:
+            extensions: [health_check, file_storage]
+            telemetry:
+              logs:
+                level: ${env:OBS_COLLECTOR_LOG_LEVEL:-info}
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, k8sattributes, resourcedetection, redaction, batch]
+                exporters: [loadbalancing, spanmetrics, servicegraph]
+              # Derived metrics from the connectors above, straight to the
+              # metrics backend -- they never touch the sampler.
+              metrics/derived:
+                receivers: [spanmetrics, servicegraph]
+                processors: [memory_limiter, batch]
+                exporters: [otlphttp/mimir]
+              # Application OTLP metrics, notably gen_ai.client.token.usage.
+              # The old single-tier collector nulled this pipeline, so token
+              # metrics were being discarded before they ever left the cluster.
+              metrics/otlp:
+                receivers: [otlp]
+                processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+                exporters: [otlphttp/mimir]
+              # The chart ships a default `metrics` pipeline (otlp + prometheus
+              # receivers -> debug exporter). Left alive it would process every
+              # OTLP metric a SECOND time alongside metrics/otlp above and dump
+              # it all to stdout. Helm removes a key whose override is null.
+              metrics: null
+              # Alloy owns log collection (gitops/apps/05-alloy.yaml).
+              logs: null
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: otel
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

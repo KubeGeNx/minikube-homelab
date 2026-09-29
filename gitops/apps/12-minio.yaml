@@ -1,3 +1,29 @@
+# MinIO -- the object storage layer underneath Tempo, Loki, and Mimir.
+#
+# This is no longer just Velero's backup target. All three telemetry backends
+# store their blocks here, which changes what MinIO is: a stateful system the
+# whole observability stack sits on top of. Two consequences worth stating out
+# loud rather than discovering later:
+#
+#   1. If MinIO degrades, traces, logs, AND metrics degrade together. The
+#      meta-monitoring in W9 must therefore not depend on this stack to tell
+#      you MinIO is unhealthy.
+#   2. The base here is `mode: distributed` (4 nodes x 2 drives, erasure
+#      coded) because a single-node MinIO holding all production telemetry is
+#      a single point of data loss. environments/dev/values/minio.yaml drops
+#      it to standalone for minikube -- that is a dev concession, not the
+#      default.
+#
+# Each backend gets its OWN bucket, user, and policy scoped to that bucket, so
+# a leaked Loki key cannot read trace content. The chart provisions all of it
+# through post-install jobs (buckets/policies/users below).
+#
+# CREDENTIALS: inline, matching the existing convention in this repo (Grafana's
+# adminPassword, RabbitMQ's password). That is acceptable for a homelab and NOT
+# acceptable for real production -- the fix is External Secrets Operator
+# (already in the repo, enabled in the staging/prod overlays) plus the chart's
+# `existingSecret` / `users[].existingSecret` fields. Left as a deliberate,
+# visible TODO rather than a silent one.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -6,6 +32,9 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
+    # Wave 3: everything that stores objects here comes later. (Waves are
+    # advisory in this repo -- see enable-component.sh's deps_of for the
+    # ordering that is actually enforced.)
     argocd.argoproj.io/sync-wave: "3"
 spec:
   project: default
@@ -16,24 +45,82 @@ spec:
     helm:
       releaseName: minio
       values: |
-        mode: standalone
-        replicas: 1
+        # Erasure-coded across 4 nodes x 2 drives. Distributed mode requires
+        # at least 4 replicas; below that the chart refuses to start.
+        mode: distributed
+        replicas: 4
+        drivesPerNode: 2
+
         rootUser: homelab-admin
         rootPassword: HomelabMinio123!
+
         persistence:
           enabled: true
           storageClass: standard
-          size: 20Gi
+          # Per drive, so total raw = size x replicas x drivesPerNode.
+          size: 50Gi
+
         resources:
           requests:
-            cpu: 50m
-            memory: 256Mi
+            cpu: 200m
+            memory: 1Gi
+          limits:
+            memory: 4Gi
+
         service:
           type: ClusterIP
+
+        # One bucket per consumer. Versioning is off: telemetry blocks are
+        # written once and expired by each backend's own retention/compaction,
+        # so object versions would only multiply storage.
         buckets:
+          - name: tempo
+            policy: none
+            purge: false
+          - name: loki
+            policy: none
+            purge: false
+          - name: mimir
+            policy: none
+            purge: false
           - name: velero-backups
             policy: none
             purge: false
+
+        # Least privilege per backend: each policy grants access to exactly
+        # one bucket. Without these every backend would share the root
+        # credential and one leaked key would expose all telemetry, including
+        # the prompt/completion content in the agents-content tenant.
+        policies:
+          - name: tempo-rw
+            statements:
+              - resources: ["arn:aws:s3:::tempo/*"]
+                actions: ["s3:AbortMultipartUpload", "s3:GetObject", "s3:DeleteObject", "s3:PutObject", "s3:ListMultipartUploadParts"]
+              - resources: ["arn:aws:s3:::tempo"]
+                actions: ["s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"]
+          - name: loki-rw
+            statements:
+              - resources: ["arn:aws:s3:::loki/*"]
+                actions: ["s3:AbortMultipartUpload", "s3:GetObject", "s3:DeleteObject", "s3:PutObject", "s3:ListMultipartUploadParts"]
+              - resources: ["arn:aws:s3:::loki"]
+                actions: ["s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"]
+          - name: mimir-rw
+            statements:
+              - resources: ["arn:aws:s3:::mimir/*"]
+                actions: ["s3:AbortMultipartUpload", "s3:GetObject", "s3:DeleteObject", "s3:PutObject", "s3:ListMultipartUploadParts"]
+              - resources: ["arn:aws:s3:::mimir"]
+                actions: ["s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"]
+
+        users:
+          - accessKey: tempo
+            secretKey: HomelabTempoS3Key123!
+            policy: tempo-rw
+          - accessKey: loki
+            secretKey: HomelabLokiS3Key123!
+            policy: loki-rw
+          - accessKey: mimir
+            secretKey: HomelabMimirS3Key123!
+            policy: mimir-rw
   destination:
     server: https://kubernetes.default.svc
     namespace: minio

@@ -1,10 +1,16 @@
-# Grafana Alloy: unified collector. Ships pod logs -> Loki, scrapes
-# prometheus.io/scrape-annotated pods -> Prometheus (remote-write receiver
-# enabled in 08-kube-prometheus-stack.yaml), and receives OTLP traces ->
-# Tempo. Runs as a single-replica StatefulSet (not a DaemonSet) so
-# loki.source.kubernetes doesn't tail every pod once per node.
-# NOTE: loki-stack's promtail is disabled (11-loki-stack.yaml) because
-# Alloy owns log shipping -- if you disable Alloy, re-enable promtail.
+# Grafana Alloy: INFRASTRUCTURE collector. Ships pod logs -> Loki and scrapes
+# prometheus.io/scrape-annotated pods -> Mimir. Runs as a single-replica
+# StatefulSet (not a DaemonSet) so loki.source.kubernetes doesn't tail every
+# pod once per node.
+#
+# Division of labour with the OpenTelemetry collectors, which is worth being
+# precise about because both are "collectors":
+#   Alloy         -- infrastructure telemetry it discovers by scraping/tailing.
+#   otel-agent    -- APPLICATION telemetry that applications push to it.
+# Alloy no longer accepts traces at all; see the Traces section below.
+#
+# Both ends changed in W3: Loki 3 replaced loki-stack (whose promtail this
+# always superseded), and Mimir replaced Prometheus as the metrics store.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -31,15 +37,6 @@ spec:
             requests:
               cpu: 50m
               memory: 256Mi
-          extraPorts:
-            - name: otlp-grpc
-              port: 4317
-              targetPort: 4317
-              protocol: TCP
-            - name: otlp-http
-              port: 4318
-              targetPort: 4318
-              protocol: TCP
           configMap:
             content: |
               // ---- Logs: all pod logs -> Loki ----
@@ -54,11 +51,19 @@ spec:
 
               loki.write "default" {
                 endpoint {
-                  url = "http://loki-stack.logging.svc:3100/loki/api/v1/push"
+                  // loki-gateway is the nginx front door of the simple-scalable
+                  // deployment; it fronts read and write. The old loki-stack
+                  // single service is gone.
+                  url = "http://loki-gateway.logging.svc/loki/api/v1/push"
+                  // Loki now runs auth_enabled, so a tenant is mandatory on
+                  // every write. Infrastructure logs go to `agents`; the
+                  // `agents-content` tenant is reserved for prompt/completion
+                  // records and has 7d retention.
+                  tenant_id = "agents"
                 }
               }
 
-              // ---- Metrics: annotated pods -> Prometheus remote-write ----
+              // ---- Metrics: annotated pods -> Mimir ----
               discovery.relabel "scrape_pods" {
                 targets = discovery.kubernetes.pods.targets
                 rule {
@@ -75,37 +80,26 @@ spec:
 
               prometheus.remote_write "default" {
                 endpoint {
-                  url = "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/write"
+                  // Mimir is the long-term store now. Writing to Prometheus's
+                  // remote-write receiver would land these in a TSDB that only
+                  // keeps a few hours.
+                  url = "http://mimir-gateway.mimir.svc/api/v1/push"
                 }
               }
 
-              // ---- Traces: OTLP in -> Tempo ----
-              otelcol.receiver.otlp "default" {
-                grpc {
-                  endpoint = "0.0.0.0:4317"
-                }
-                http {
-                  endpoint = "0.0.0.0:4318"
-                }
-                output {
-                  traces = [otelcol.processor.batch.default.input]
-                }
-              }
-
-              otelcol.processor.batch "default" {
-                output {
-                  traces = [otelcol.exporter.otlp.tempo.input]
-                }
-              }
-
-              otelcol.exporter.otlp "tempo" {
-                client {
-                  endpoint = "tempo.tracing.svc:4317"
-                  tls {
-                    insecure = true
-                  }
-                }
-              }
+              // ---- Traces: REMOVED ----
+              // Alloy used to accept OTLP and forward straight to Tempo. That
+              // is now a liability rather than a convenience: it was a second
+              // door into the trace backend that bypassed everything the
+              // collector tiers exist to do -- no k8sattributes enrichment, no
+              // redaction of prompt content, no spanmetrics, and no tail
+              // sampling. Traces arriving that way would be inconsistent with
+              // every other trace in the system and would quietly defeat the
+              // content-redaction guarantee.
+              //
+              // Applications send OTLP to the otel-agent DaemonSet instead:
+              //   otel-agent-opentelemetry-collector.otel.svc:4317
+              // See gitops/apps/26-otel-agent.yaml.
   destination:
     server: https://kubernetes.default.svc
     namespace: alloy

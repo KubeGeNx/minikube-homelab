@@ -10,16 +10,25 @@
 # Per-component targets ensure the base platform (minikube, CRDs, Argo CD)
 # exists first, then scripts/enable-component.sh resolves dependencies
 # (e.g. `make velero` also enables minio; `make alloy` pulls in
-# kube-prometheus-stack, loki-stack, and tempo) and applies once.
+# kube-prometheus-stack, loki, mimir) and applies once.
 .DEFAULT_GOAL := help
 
+# Environment overlay in environments/<env>/, layered over the repo-root
+# components.env / versions.env. One environment per cluster.
+#   make apply ENV=prod
+# Exported so the scripts (and build-applicationset.py) see it whether it came
+# from the command line or the surrounding shell.
+ENV ?= dev
+export ENV
+
 HELM_COMPONENTS := cert-manager metallb external-secrets envoy-gateway \
-  kube-prometheus-stack loki-stack tempo alloy minio velero kagent agentgateway keda \
-  kyverno vpa gitlab gitlab-runner airflow rabbitmq otel-collector
+  kube-prometheus-stack loki mimir tempo alloy minio velero kagent agentgateway keda \
+  kyverno vpa gitlab gitlab-runner airflow rabbitmq otel-collector obi
 SPECIAL_COMPONENTS := olm kubeflow
 
 .PHONY: help bootstrap prereqs cluster crds argocd base apply gateway tunnel hosts \
-  update-versions status clean destroy $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS)
+  update-versions status clean destroy obs-status obs-level obs-capture \
+  $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS)
 
 help:
 	@echo "Targets:"
@@ -31,9 +40,14 @@ help:
 	@echo "  tunnel               minikube tunnel for the homelab profile"
 	@echo "  hosts                /etc/hosts entries for *.lab.local"
 	@echo "  status | clean | destroy"
+	@echo "  obs-status | obs-level LEVEL=debug | obs-capture ON=true TTL=30m"
 	@echo ""
 	@echo "Per-component (installs dependencies automatically):"
 	@echo "  $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS)"
+	@echo ""
+	@echo "Environment overlay (environments/<env>/), currently ENV=$(ENV):"
+	@echo "  make apply ENV=prod    render+apply the prod overlay"
+	@echo "  see environments/README.md for the layering rules"
 
 bootstrap:
 	./bootstrap.sh
@@ -88,6 +102,30 @@ hosts:
 status:
 	kubectl get applications -n argocd
 	kubectl get pods -A
+
+# --- Observability verbosity control ---------------------------------------
+# The collector reads these through ${env:} expansion, which resolves once at
+# process start -- so all three targets end in a rollout restart. Editing the
+# ConfigMap by hand changes nothing that is running.
+#
+#   make obs-status
+#   make obs-level LEVEL=debug        # 100% tail sampling + debug logs
+#   make obs-capture ON=true TTL=30m  # prompt/completion capture, time-boxed
+#   make obs-capture ON=false
+obs-status:
+	bash scripts/12-observability-level.sh status
+
+obs-level:
+	@test -n "$(LEVEL)" || { echo "usage: make obs-level LEVEL=normal|debug"; exit 1; }
+	bash scripts/12-observability-level.sh level $(LEVEL)
+
+obs-capture:
+	@test -n "$(ON)" || { echo "usage: make obs-capture ON=true [TTL=30m] | ON=false"; exit 1; }
+	@if [ "$(ON)" = "true" ]; then \
+	  bash scripts/12-observability-level.sh capture on --ttl $${TTL:-30m}; \
+	else \
+	  bash scripts/12-observability-level.sh capture off; \
+	fi
 
 clean:
 	./cleanup.sh --keep-minikube
