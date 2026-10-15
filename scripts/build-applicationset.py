@@ -77,7 +77,10 @@ def substitute(s, versions, filename):
     if not isinstance(s, str):
         return s
 
-    unresolved = [v for v in re.findall(r"\$\{([A-Z_]+)\}", s) if v not in versions]
+    # Only substitute uppercase variable names ending in _VERSION. Helm values
+    # can contain runtime placeholders such as ${HOST_IP} in comments or config;
+    # those belong to the workload, not the chart-version catalogue.
+    unresolved = [v for v in re.findall(r"\$\{([A-Z][A-Z0-9_]*_VERSION)\}", s) if v not in versions]
     if unresolved:
         print(
             f"ERROR: {filename}: placeholder(s) not defined in versions.env: "
@@ -85,7 +88,7 @@ def substitute(s, versions, filename):
             file=sys.stderr,
         )
         sys.exit(1)
-    return re.sub(r"\$\{([A-Z_]+)\}", lambda m: versions[m.group(1)], s)
+    return re.sub(r"\$\{([A-Z][A-Z0-9_]*_VERSION)\}", lambda m: versions[m.group(1)], s)
 
 
 def apply_values_overlay(values_str, env_dir, app, versions):

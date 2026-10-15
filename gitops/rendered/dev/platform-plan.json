@@ -15,6 +15,7 @@
     "rabbitmq",
     "otel-gateway",
     "otel-agent",
+    "obi",
     "olm"
   ],
   "entries": {
@@ -275,6 +276,7 @@
     "kube-prometheus-stack": "monitoring",
     "loki": "logging",
     "mimir": "mimir",
+    "obi": "obi",
     "olm": "olm",
     "otel-agent": "otel",
     "otel-gateway": "otel",
@@ -300,6 +302,9 @@
     "mimir": [
       "alloy"
     ],
+    "otel-agent": [
+      "obi"
+    ],
     "otel-gateway": [
       "otel-agent"
     ],
@@ -320,6 +325,7 @@
     "kube-prometheus-stack",
     "loki",
     "mimir",
+    "obi",
     "olm",
     "otel-agent",
     "otel-gateway",

@@ -88,7 +88,7 @@ gateway: preflight base
 	bash scripts/08-platform-gateway.sh
 
 $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS):
-	bash scripts/enable-component.sh --no-apply $@
+	bash scripts/enable-component.sh --no-apply --env $(ENV) $@
 	bash scripts/build-applicationset.sh
 	$(MAKE) base
 	bash scripts/04-apply-apps.sh

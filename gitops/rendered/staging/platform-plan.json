@@ -17,6 +17,7 @@
     "rabbitmq",
     "otel-gateway",
     "otel-agent",
+    "obi",
     "olm"
   ],
   "entries": {
@@ -279,6 +280,7 @@
     "kyverno": "kyverno",
     "loki": "logging",
     "mimir": "mimir",
+    "obi": "obi",
     "olm": "olm",
     "otel-agent": "otel",
     "otel-gateway": "otel",
@@ -304,6 +306,9 @@
     "mimir": [
       "alloy"
     ],
+    "otel-agent": [
+      "obi"
+    ],
     "otel-gateway": [
       "otel-agent"
     ],
@@ -326,6 +331,7 @@
     "kyverno",
     "loki",
     "mimir",
+    "obi",
     "olm",
     "otel-agent",
     "otel-gateway",

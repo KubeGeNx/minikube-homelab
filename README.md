@@ -46,7 +46,9 @@ works as a smoke test (don't expect the full stack to fit).
 
 ### Installing a single component
 
-Every component has its own target. The platform plan resolves declared
+Every component has its own target. In dev, it enables the base flag; with
+`ENV=staging` or `ENV=prod`, it enables the component unless that environment
+explicitly disables it. The platform plan resolves declared
 dependencies and shows their provenance. If a required dependency is explicitly
 disabled, planning stops and names the dependency chain; enable it deliberately
 before applying:
@@ -94,7 +96,7 @@ routes, and observability data paths.
 | Messaging | RabbitMQ (`make rabbitmq`), backs the `examples/dotnet-rabbitmq/` sample | on |
 | Backup | Velero (backs up to SeaweedFS) | off |
 | AI agents | kagent (`make kagent`, needs LLM API key) | off |
-| Observability | OpenTelemetry eBPF Instrumentation (`make obi`) — zero-code HTTP/gRPC spans, no SDK required | off |
+| Observability | OpenTelemetry eBPF Instrumentation (`make obi`) — zero-code HTTP/gRPC spans, no SDK required | on |
 | AI gateway | agentgateway (`make agentgateway`) | off |
 | Autoscaling | KEDA (`make keda`), event-driven ScaledObject/ScaledJob autoscaling | on |
 | Autoscaling | VPA (`make vpa`), right-sizes pod CPU/memory requests | on |
@@ -144,12 +146,14 @@ separate data, but do not provide per-component credential isolation.
 Retention becomes a policy setting rather than a disk-size accident, and the
 read path scales horizontally.
 
-**eBPF, optionally.** `make obi` adds OpenTelemetry eBPF Instrumentation as a
+**eBPF instrumentation.** `make obi` enables OpenTelemetry eBPF Instrumentation as a
 DaemonSet, giving HTTP/gRPC spans and RED metrics for pods nobody instrumented
 — no code change, no redeploy. It runs unprivileged (capabilities dropped to
 the seven eBPF actually needs, read-only rootfs) but still requires `hostPID`
-and `hostNetwork`, which is why it is off by default and its namespace is
-PSA-privileged. It emits no `gen_ai.*` attributes and no token counts, so it
+and `hostNetwork`, which is why it is opt-in and its namespace is
+PSA-privileged. It is enabled in the checked-in dev and staging plans, and
+disabled in prod until the security trade-off is reviewed there. It emits no
+`gen_ai.*` attributes and no token counts, so it
 complements the SDK instrumentation rather than replacing it.
 
 Prometheus is still there but its role narrowed: it scrapes ServiceMonitors and

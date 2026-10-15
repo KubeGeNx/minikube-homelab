@@ -178,15 +178,16 @@ is currently disabled.
 | `rabbitmq` | Enabled | Helm; message broker and Prometheus metrics | [25-rabbitmq](../gitops/apps/25-rabbitmq.yaml) |
 | `otel-gateway` | Enabled | Helm; StatefulSet collector tier, mTLS receiver, tail sampling and trace tenant routing | [27-otel-gateway](../gitops/apps/27-otel-gateway.yaml), [mTLS certs](../gitops/platform/otel-mtls.yaml) |
 | `otel-agent` | Enabled | Helm; node DaemonSet, enrichment, redaction, derived metrics and reliable export | [26-otel-agent](../gitops/apps/26-otel-agent.yaml) |
-| `obi` | Optional | Helm; eBPF zero-code instrumentation, exports to node agent | [29-obi](../gitops/apps/29-obi.yaml) |
+| `obi` | Enabled in dev/staging; disabled in prod | Helm; eBPF zero-code instrumentation, exports to node agent | [29-obi](../gitops/apps/29-obi.yaml) |
 | `olm` | Enabled | Script; Operator Lifecycle Manager from official manifests | [`scripts/06-olm.sh`](../scripts/06-olm.sh) |
 | `kubeflow` | Optional | Argo CD Git adapter; Kustomize-based ML platform | [special manifest](../gitops/special/16-kubeflow.yaml) |
 
-The checked-in dev plan currently enables 14 catalogue entries: cert-manager,
+The checked-in dev plan currently enables 15 catalogue entries: cert-manager,
 Envoy Gateway, kube-prometheus-stack, SeaweedFS, Tempo, Loki, Mimir, Alloy,
-KEDA, VPA, RabbitMQ, both OpenTelemetry collector tiers, and OLM. Components
-such as OBI, Velero, MetalLB, Kubeflow, GitLab, and the agent tools are
-deliberately not installed merely because their manifests are present.
+KEDA, VPA, RabbitMQ, both OpenTelemetry collector tiers, OBI, and OLM. Staging
+also enables OBI; prod leaves it disabled pending a security review. Components
+such as Velero, MetalLB, Kubeflow, GitLab, and the agent tools are deliberately
+not installed merely because their manifests are present.
 
 ## Configuration and operational entry points
 
