@@ -1,0 +1,40 @@
+# dev sizing for the gateway/sampler tier.
+#
+# Same topology as prod -- StatefulSet, tail sampling, persistent queue -- just
+# one replica on one node. The sampling POLICIES are deliberately not reduced:
+# dev should exercise the same decision logic prod runs.
+#
+# The 10% baseline is a poor local-debugging experience, but do NOT pin it here
+# with extraEnvs: a container `env` entry outranks `envFrom`, so hardcoding it
+# would make W5's observability-levels ConfigMap unable to change it in dev --
+# exactly the environment where you most want to flip it. Set
+# OBS_TAIL_BASELINE_PERCENTAGE=100 in the dev ConfigMap instead once W5 lands.
+replicaCount: 1
+autoscaling:
+  enabled: false
+podDisruptionBudget:
+  # A PDB with minAvailable 1 over a single replica blocks node drains.
+  enabled: false
+resources:
+  requests:
+    cpu: 100m
+    memory: 384Mi
+  limits:
+    memory: 1Gi
+statefulset:
+  volumeClaimTemplates:
+    - metadata:
+        name: queue
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 2Gi
+config:
+  processors:
+    tail_sampling:
+      # Shorter wait so traces show up in Tempo while you are still looking.
+      decision_wait: 5s
+      num_traces: 10000
+      expected_new_traces_per_sec: 50

@@ -1,0 +1,8 @@
+# Single volume server and PVC for the dev cluster.
+volume:
+  dataDirs:
+    - name: data
+      type: persistentVolumeClaim
+      size: 20Gi
+      storageClass: standard
+      maxVolumes: 0

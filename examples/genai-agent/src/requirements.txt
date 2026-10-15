@@ -1,0 +1,6 @@
+# Pinned rather than floating: an OTel SDK minor bump can change exporter
+# defaults, and this sample is also the platform's smoke test.
+anthropic==0.116.0
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-grpc==1.29.0

@@ -11,5 +11,9 @@ spec:
     - tempo.lab.local
   rules:
     - backendRefs:
-        - name: tempo
-          port: 3100
+        # tempo-distributed splits ingest from query: the distributor takes
+        # writes, the query-frontend serves the read API. This route is for
+        # humans and Grafana, so it points at the query path. The monolith's
+        # single `tempo` service on 3100 no longer exists.
+        - name: tempo-query-frontend
+          port: 3200

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Enables one or more components (plus their dependencies, recursively) in
-# components.env, then rebuilds/applies the platform via 04-apply-apps.sh.
+# Enables requested component flags in components.env, renders the shared
+# catalogue plan, then applies via 04-apply-apps.sh. Dependencies are resolved
+# by the planner and are never silently written into operator flags.
 # Used by the Makefile's per-component targets:
-#   ./scripts/enable-component.sh velero    # also enables minio
+#   ./scripts/enable-component.sh velero    # also requires seaweedfs
 # Add --no-apply to only flip the flags.
 set -euo pipefail
 
@@ -16,24 +17,14 @@ flag_of() {
   case "$1" in
     kubeflow) echo "KUBEFLOW_ENABLED" ;;
     olm)      echo "OLM_ENABLED" ;;
+    # One flag, two Applications (otel-gateway + otel-agent), so the
+    # user-facing name isn't a row in COMPONENT_TABLE any more.
+    otel-collector) echo "OTEL_COLLECTOR_ENABLED" ;;
     *)
       # shellcheck disable=SC1091
       source "$SCRIPT_DIR/lib-components.sh"
       printf '%s\n' "$COMPONENT_TABLE" | awk -F'|' -v c="$1" '$1==c{print $2}'
       ;;
-  esac
-}
-
-# component -> hard dependencies (installed even if not asked for)
-deps_of() {
-  case "$1" in
-    envoy-gateway) echo "cert-manager" ;;                          # TLS'd Gateway needs the CA issuer
-    loki-stack)    echo "kube-prometheus-stack" ;;                 # Grafana datasource lives there
-    tempo)         echo "kube-prometheus-stack" ;;                 # same
-    alloy)         echo "kube-prometheus-stack loki-stack tempo" ;; # forwards to all three
-    velero)        echo "minio" ;;                                 # S3 backup target
-    gitlab-runner) echo "gitlab" ;;                                # runner registers against it
-    *)             echo "" ;;
   esac
 }
 
@@ -49,12 +40,7 @@ enable_flag() {
 }
 
 RESOLVED=""
-resolve() {
-  local comp="$1" dep
-  case " $RESOLVED " in *" $comp "*) return ;; esac
-  for dep in $(deps_of "$comp"); do resolve "$dep"; done
-  RESOLVED="$RESOLVED $comp"
-}
+resolve() { case " $RESOLVED " in *" $1 "*) return ;; esac; RESOLVED="$RESOLVED $1"; }
 
 APPLY=true
 COMPONENTS=""
@@ -72,12 +58,13 @@ for comp in $COMPONENTS; do
   resolve "$comp"
 done
 
-echo "Enabling (with dependencies):$RESOLVED"
+echo "Enabling requested flags:$RESOLVED"
 for comp in $RESOLVED; do
   enable_flag "$(flag_of "$comp")"
 done
 
 if [ "$APPLY" = "true" ]; then
   echo ""
+  bash "$SCRIPT_DIR/build-applicationset.sh"
   bash "$SCRIPT_DIR/04-apply-apps.sh"
 fi

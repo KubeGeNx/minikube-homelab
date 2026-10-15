@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 # Bash wrapper for scripts/build-applicationset.py: wires up the shared
-# COMPONENT_TABLE (scripts/lib-components.sh) and file paths as env vars,
-# checks python3 + PyYAML are available, then builds
-# gitops/rendered/applicationset.yaml.
+# typed catalogue and environment plan, checks python3 + PyYAML, then builds
+# checked-in generated output for the selected environment.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/lib-components.sh"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "ERROR: python3 not found. Install it: brew install python3"
@@ -28,8 +24,31 @@ if ! python3 -c "import yaml" >/dev/null 2>&1; then
 fi
 
 export ROOT_DIR
-export COMPONENT_TABLE
-export OUT_FILE="$ROOT_DIR/gitops/rendered/applicationset.yaml"
+# One rendered ApplicationSet per environment. ENV selects which overlay in
+# environments/<env>/ is applied on top of the repo-root base files.
+export ENV="${ENV:-dev}"
+if [ "${1:-}" = "--check" ]; then
+  TMP_OUTPUT="$(mktemp -d)"
+  trap 'rm -rf "$TMP_OUTPUT"' EXIT
+  export OUT_FILE="$TMP_OUTPUT/applicationset.yaml"
+  python3 "$SCRIPT_DIR/build-applicationset.py"
+  for artifact in applicationset.yaml platform-plan.json otel-agent-config.yaml otel-gateway-config.yaml; do
+    current="$ROOT_DIR/gitops/rendered/$ENV/$artifact"
+    generated="$TMP_OUTPUT/$artifact"
+    if [ -f "$generated" ] && { [ ! -f "$current" ] || ! cmp -s "$generated" "$current"; }; then
+      echo "ERROR: checked-in $artifact is stale for ENV=$ENV. Run: ENV=$ENV bash scripts/build-applicationset.sh" >&2
+      exit 1
+    fi
+    if [ ! -f "$generated" ] && [ -f "$current" ]; then
+      echo "ERROR: stale generated artifact $current. Run: ENV=$ENV bash scripts/build-applicationset.sh" >&2
+      exit 1
+    fi
+  done
+  echo "Checked generated plan, collector configs, and ApplicationSet for ENV=$ENV."
+  exit 0
+fi
 
-echo "Building platform ApplicationSet from gitops/apps/*.yaml + versions.env + components.env..."
+export OUT_FILE="$ROOT_DIR/gitops/rendered/$ENV/applicationset.yaml"
+
+echo "Building platform ApplicationSet (ENV=$ENV) from gitops/apps/*.yaml + base env files + environments/$ENV/..."
 python3 "$SCRIPT_DIR/build-applicationset.py"

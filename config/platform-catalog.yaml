@@ -1,0 +1,36 @@
+version: 1
+components:
+  cert-manager: { flag: CERT_MANAGER_ENABLED, adapter: helm, manifest: gitops/apps/01-cert-manager.yaml, wave: 1, dependencies: [] }
+  metallb: { flag: METALLB_ENABLED, adapter: helm, manifest: gitops/apps/02-metallb.yaml, wave: 1, dependencies: [] }
+  external-secrets: { flag: EXTERNAL_SECRETS_ENABLED, adapter: helm, manifest: gitops/apps/03-external-secrets.yaml, wave: 1, dependencies: [] }
+  kyverno: { flag: KYVERNO_ENABLED, adapter: helm, manifest: gitops/apps/20-kyverno.yaml, wave: 1, dependencies: [] }
+  envoy-gateway: { flag: ENVOY_GATEWAY_ENABLED, adapter: helm, manifest: gitops/apps/06-envoy-gateway.yaml, wave: 2, dependencies: [cert-manager] }
+  kube-prometheus-stack: { flag: KUBE_PROMETHEUS_STACK_ENABLED, adapter: helm, manifest: gitops/apps/08-kube-prometheus-stack.yaml, wave: 2, dependencies: [] }
+  tempo: { flag: TEMPO_ENABLED, adapter: helm, manifest: gitops/apps/04-tempo.yaml, wave: 3, dependencies: [kube-prometheus-stack, seaweedfs] }
+  alloy: { flag: ALLOY_ENABLED, adapter: helm, manifest: gitops/apps/05-alloy.yaml, wave: 4, dependencies: [kube-prometheus-stack, loki, mimir] }
+  loki: { flag: LOKI_ENABLED, adapter: helm, manifest: gitops/apps/11-loki.yaml, wave: 3, dependencies: [kube-prometheus-stack, seaweedfs] }
+  mimir: { flag: MIMIR_ENABLED, adapter: helm, manifest: gitops/apps/28-mimir.yaml, wave: 3, dependencies: [kube-prometheus-stack, seaweedfs] }
+  seaweedfs: { flag: SEAWEEDFS_ENABLED, adapter: helm, manifest: gitops/apps/12-seaweedfs.yaml, wave: 3, dependencies: [] }
+  velero: { flag: VELERO_ENABLED, adapter: helm, manifest: gitops/apps/13-velero.yaml, wave: 4, dependencies: [seaweedfs] }
+  kagent-crds: { flag: KAGENT_ENABLED, adapter: helm, manifest: gitops/apps/14-kagent-crds.yaml, wave: 1, dependencies: [] }
+  kagent: { flag: KAGENT_ENABLED, adapter: helm, manifest: gitops/apps/15-kagent.yaml, wave: 2, dependencies: [kagent-crds] }
+  agentgateway-crds: { flag: AGENTGATEWAY_ENABLED, adapter: helm, manifest: gitops/apps/17-agentgateway-crds.yaml, wave: 1, dependencies: [] }
+  agentgateway: { flag: AGENTGATEWAY_ENABLED, adapter: helm, manifest: gitops/apps/18-agentgateway.yaml, wave: 2, dependencies: [agentgateway-crds] }
+  keda: { flag: KEDA_ENABLED, adapter: helm, manifest: gitops/apps/19-keda.yaml, wave: 2, dependencies: [] }
+  vpa: { flag: VPA_ENABLED, adapter: helm, manifest: gitops/apps/21-vpa.yaml, wave: 2, dependencies: [] }
+  gitlab: { flag: GITLAB_ENABLED, adapter: helm, manifest: gitops/apps/22-gitlab.yaml, wave: 1, dependencies: [] }
+  gitlab-runner: { flag: GITLAB_RUNNER_ENABLED, adapter: helm, manifest: gitops/apps/23-gitlab-runner.yaml, wave: 2, dependencies: [gitlab] }
+  airflow: { flag: AIRFLOW_ENABLED, adapter: helm, manifest: gitops/apps/24-airflow.yaml, wave: 2, dependencies: [] }
+  rabbitmq: { flag: RABBITMQ_ENABLED, adapter: helm, manifest: gitops/apps/25-rabbitmq.yaml, wave: 2, dependencies: [kube-prometheus-stack] }
+  otel-gateway: { flag: OTEL_COLLECTOR_ENABLED, adapter: helm, manifest: gitops/apps/27-otel-gateway.yaml, wave: 4, dependencies: [tempo] }
+  otel-agent: { flag: OTEL_COLLECTOR_ENABLED, adapter: helm, manifest: gitops/apps/26-otel-agent.yaml, wave: 5, dependencies: [otel-gateway] }
+  obi: { flag: OBI_ENABLED, adapter: helm, manifest: gitops/apps/29-obi.yaml, wave: 5, dependencies: [otel-agent] }
+  olm: { flag: OLM_ENABLED, adapter: script, handler: scripts/06-olm.sh, version: OLM_VERSION, namespace: olm, dependencies: [] }
+  kubeflow: { flag: KUBEFLOW_ENABLED, adapter: argocd-git, manifest: gitops/special/16-kubeflow.yaml, version: KUBEFLOW_VERSION, namespace: kubeflow, dependencies: [] }
+routes:
+  - { file: argocd.yaml, flag: ALWAYS }
+  - { file: grafana.yaml, flag: KUBE_PROMETHEUS_STACK_ENABLED }
+  - { file: prometheus.yaml, flag: KUBE_PROMETHEUS_STACK_ENABLED }
+  - { file: seaweedfs.yaml, flag: SEAWEEDFS_ENABLED }
+  - { file: tempo.yaml, flag: TEMPO_ENABLED }
+  - { file: rabbitmq.yaml, flag: RABBITMQ_ENABLED }

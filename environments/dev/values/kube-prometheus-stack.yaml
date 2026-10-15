@@ -1,0 +1,24 @@
+# dev sizing.
+#
+# Prometheus is no longer the metrics store -- Mimir is (W3). Its base config
+# already narrows to a 6h scrape-and-remote-write buffer, so there is nothing
+# left for dev to trim on retention; overriding it upward (this file used to
+# set 24h, from when Prometheus WAS the store) would make dev keep more history
+# locally than prod, which is backwards.
+#
+# What dev does change is the disk behind that buffer.
+prometheus:
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+# NOTE: Grafana's PVC size is deliberately NOT overridden here. PersistentVolume
+# claims cannot be shrunk, so asking for less than an already-provisioned volume
+# leaves Argo CD permanently OutOfSync on a change it can never apply.

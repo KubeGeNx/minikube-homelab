@@ -1,0 +1,131 @@
+# GENERATED from config/telemetry-policy.yaml and dev Helm values.
+# Review only; the same validated config is embedded in applicationset.yaml.
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/queue
+    create_directory: true
+    compaction:
+      on_start: true
+      directory: /var/lib/otelcol/queue
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        tls:
+          cert_file: /etc/otel/tls/tls.crt
+          key_file: /etc/otel/tls/tls.key
+          client_ca_file: /etc/otel/tls/ca.crt
+      http:
+        endpoint: 0.0.0.0:4318
+        tls:
+          cert_file: /etc/otel/tls/tls.crt
+          key_file: /etc/otel/tls/tls.key
+          client_ca_file: /etc/otel/tls/ca.crt
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  tail_sampling:
+    decision_wait: 5s
+    num_traces: 10000
+    expected_new_traces_per_sec: 50
+    policies:
+    - name: errors
+      type: status_code
+      status_code:
+        status_codes:
+        - ERROR
+    - name: slow
+      type: latency
+      latency:
+        threshold_ms: 5000
+    - name: expensive-generations
+      type: numeric_attribute
+      numeric_attribute:
+        key: gen_ai.usage.output_tokens
+        min_value: 4000
+    - name: deep-agent-loops
+      type: span_count
+      span_count:
+        min_spans: 50
+    - name: baseline
+      type: probabilistic
+      probabilistic:
+        sampling_percentage: ${env:OBS_TAIL_BASELINE_PERCENTAGE:-10}
+connectors:
+  routing:
+    error_mode: ignore
+    default_pipelines:
+    - traces/agents
+    table:
+    - context: span
+      condition: attributes["gen_ai.capture.content"] == true
+      pipelines:
+      - traces/content
+exporters:
+  otlp/tempo:
+    endpoint: tempo-distributor.tracing.svc:4317
+    tls:
+      insecure: true
+    headers:
+      X-Scope-OrgID: agents
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      num_consumers: 10
+      queue_size: 10000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+  otlp/tempo-content:
+    endpoint: tempo-distributor.tracing.svc:4317
+    tls:
+      insecure: true
+    headers:
+      X-Scope-OrgID: agents-content
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      num_consumers: 5
+      queue_size: 5000
+    retry_on_failure:
+      enabled: true
+service:
+  extensions:
+  - health_check
+  - file_storage
+  telemetry:
+    logs:
+      level: ${env:OBS_COLLECTOR_LOG_LEVEL:-info}
+  pipelines:
+    traces:
+      receivers:
+      - otlp
+      processors:
+      - memory_limiter
+      - tail_sampling
+      exporters:
+      - routing
+    traces/agents:
+      receivers:
+      - routing
+      processors:
+      - batch
+      exporters:
+      - otlp/tempo
+    traces/content:
+      receivers:
+      - routing
+      processors:
+      - batch
+      exporters:
+      - otlp/tempo-content
+    metrics: null
+    logs: null

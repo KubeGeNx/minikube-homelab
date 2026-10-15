@@ -1,0 +1,198 @@
+# Governance rules for AI/agent workloads: cost, refusals, tool failures.
+#
+# WHY THESE ARE NOT PrometheusRule CRDs
+#
+# The gen_ai_* metrics never touch kube-prometheus-stack's Prometheus. They are
+# pushed by the applications over OTLP, through the otel-agent tier, straight
+# into Mimir -- nothing scrapes them. A PrometheusRule evaluated by that
+# Prometheus would query an empty series set and never fire, which is the worst
+# possible failure mode for an alert: green forever, for the wrong reason.
+#
+# So the rules live in Mimir's ruler, loaded by the CronJob at the bottom.
+#
+# METRIC NAMES AND LABELS BELOW WERE MEASURED, not guessed -- an agent was run
+# against a collector with a Prometheus exporter and the output read back:
+#
+#   gen_ai_client_token_usage_sum{gen_ai_token_type="input"|"output",
+#       gen_ai_request_model, gen_ai_system, gen_ai_operation_name, job}
+#   gen_ai_client_operation_duration_seconds_count{error_type="refusal", ...}
+#
+# Two things that are easy to get wrong:
+#   * token usage has NO unit suffix. Its OTLP unit is "{token}", an
+#     annotation, which the Prometheus translation strips -- so it is
+#     gen_ai_client_token_usage_sum, not ..._tokens_sum.
+#   * service.name becomes `job`, not `service_name`. Resource attributes fold
+#     into target_info; only service.name/namespace/instance.id are promoted.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-ai-governance-rules
+  namespace: mimir
+data:
+  ai-governance.yaml: |
+    namespace: ai-governance
+    groups:
+      - name: ai-cost
+        interval: 1m
+        rules:
+          # PRICES ARE HARDCODED CONSTANTS AND WILL DRIFT.
+          # claude-opus-5 as of 2026-09: $5 / MTok input, $25 / MTok output.
+          # There is no API to look this up, so it is a maintenance burden by
+          # construction -- revisit when the model or pricing changes.
+          - record: gen_ai:cost_usd:rate1h
+            expr: |
+              sum by (job, gen_ai_request_model) (
+                rate(gen_ai_client_token_usage_sum{gen_ai_token_type="input"}[1h])
+              ) * 3600 * 0.000005
+              +
+              sum by (job, gen_ai_request_model) (
+                rate(gen_ai_client_token_usage_sum{gen_ai_token_type="output"}[1h])
+              ) * 3600 * 0.000025
+
+          - record: gen_ai:tokens:rate5m
+            expr: |
+              sum by (job, gen_ai_request_model, gen_ai_token_type) (
+                rate(gen_ai_client_token_usage_sum[5m])
+              )
+
+      - name: ai-governance-alerts
+        interval: 1m
+        rules:
+          - alert: AgentTokenSpendHigh
+            # Soft threshold. Tune to a real budget -- $2/hour is a
+            # placeholder chosen to fire on a runaway loop, not on normal use.
+            expr: gen_ai:cost_usd:rate1h > 2
+            for: 15m
+            labels:
+              severity: warning
+              category: cost
+            annotations:
+              summary: "{{ $labels.job }} is burning ${{ printf \"%.2f\" $value }}/hour on {{ $labels.gen_ai_request_model }}"
+              description: >-
+                Sustained token spend above budget. Check for a retry loop or a
+                prompt that grew: an agent that re-reads its whole history each
+                turn shows up here long before it shows up as an error.
+
+          - alert: AgentRefusalRateHigh
+            # error_type is only present when the call failed, so the numerator
+            # selects it and the denominator must not.
+            expr: |
+              sum by (job) (rate(gen_ai_client_operation_duration_seconds_count{error_type="refusal"}[15m]))
+              /
+              sum by (job) (rate(gen_ai_client_operation_duration_seconds_count[15m]))
+              > 0.10
+            for: 15m
+            labels:
+              severity: warning
+              category: quality
+            annotations:
+              summary: "{{ $labels.job }}: over 10% of model calls are being refused"
+              description: >-
+                A refusal is a 200 response with stop_reason=refusal, not an
+                error, so it will not appear in HTTP metrics. A sustained rate
+                usually means a prompt change pushed the agent into territory
+                the safety classifier declines.
+
+          - alert: AgentToolErrorRateHigh
+            # From the spanmetrics connector in the agent tier, which sits in
+            # front of tail sampling -- so this counts every tool call, not the
+            # 10% that survived sampling.
+            expr: |
+              sum by (service_name) (
+                rate(traces_span_metrics_calls_total{span_name=~"execute_tool.*",status_code="STATUS_CODE_ERROR"}[10m])
+              )
+              /
+              sum by (service_name) (
+                rate(traces_span_metrics_calls_total{span_name=~"execute_tool.*"}[10m])
+              )
+              > 0.20
+            for: 10m
+            labels:
+              severity: warning
+              category: reliability
+            annotations:
+              summary: "{{ $labels.service_name }}: over 20% of agent tool calls are failing"
+              description: >-
+                Tool failures are usually invisible from the outside -- the
+                model narrates around them and still returns an answer, so the
+                request succeeds while the output quietly degrades.
+
+          - alert: AgentTelemetryStopped
+            # The one alert that catches "the agent is running but has gone
+            # quiet", which no downstream signal reports.
+            expr: |
+              sum by (job) (rate(gen_ai_client_operation_duration_seconds_count[10m])) == 0
+              and
+              sum by (job) (gen_ai_client_operation_duration_seconds_count offset 1h) > 0
+            for: 15m
+            labels:
+              severity: critical
+              category: observability
+            annotations:
+              summary: "{{ $labels.job }} has stopped emitting GenAI telemetry"
+              description: >-
+                It was reporting an hour ago and now reports nothing. Either the
+                workload stopped, or its telemetry path broke -- check the
+                otel-agent DaemonSet on its node before assuming the former.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mimir-rules-loader
+  namespace: mimir
+---
+# Mimir's ruler reads rules from its own object storage, not from Kubernetes.
+# There is no CRD and no controller -- rules get there by an API call, which is
+# what mimirtool makes. A CronJob rather than a one-shot Job so the desired
+# state is re-asserted: `mimirtool rules sync` is declarative and idempotent,
+# so this also repairs drift if someone loads rules by hand.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mimir-rules-loader
+  namespace: mimir
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          serviceAccountName: mimir-rules-loader
+          restartPolicy: OnFailure
+          containers:
+            - name: mimirtool
+              image: grafana/mimirtool:3.2.0
+              args:
+                - rules
+                - sync
+                - /rules/ai-governance.yaml
+                - --address=http://mimir-gateway.mimir.svc
+                # Mimir runs with multitenancy_enabled: false, so it files
+                # everything under the anonymous tenant. This has to match or
+                # the rules load into a tenant nobody queries.
+                - --id=anonymous
+              volumeMounts:
+                - name: rules
+                  mountPath: /rules
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: rules
+              configMap:
+                name: mimir-ai-governance-rules

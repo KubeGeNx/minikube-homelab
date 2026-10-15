@@ -1,0 +1,137 @@
+# Admission policy for AI/agent workloads.
+#
+# The premise: an agent that cannot be traced cannot be governed. Cost, tool
+# failures, runaway loops, and refusals are only visible if the workload emits
+# telemetry the platform understands -- so these rules make that a condition of
+# running, not a convention people remember.
+#
+# Scope is narrow on purpose. Every rule is gated by a precondition on
+# `app.kubernetes.io/part-of: ai-agent`; nothing else in the cluster is
+# affected, which is what makes it safe to flip to Enforce.
+#
+# WHY PRECONDITIONS AND NOT `match.resources.selector`:
+#
+# A label selector in `match` silently disables Kyverno's autogen. With it, the
+# policy matches bare Pods ONLY -- a non-compliant Deployment is happily
+# accepted by `kubectl apply`, and its pods are then rejected by the webhook,
+# leaving a Deployment stuck at 0/1 with the real reason buried in ReplicaSet
+# events. Verified with `kyverno apply` against a bad Deployment: 0 rules
+# matched with a selector, and the autogen-* rules fire correctly without one.
+#
+# ROLLOUT: `validationFailureAction: Audit` here. Policy reports appear without
+# blocking anything:
+#   kubectl get policyreport -A
+#   kubectl get clusterpolicyreport
+# Flip to Enforce once the reports are clean. Going straight to Enforce on a
+# cluster with existing workloads is how you discover at 3am that something you
+# forgot about is non-compliant.
+#
+# Applied by scripts/08-platform-gateway.sh when KYVERNO_ENABLED is true.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-agent-must-be-observable
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: Deployment,StatefulSet,DaemonSet,Job,CronJob
+    policies.kyverno.io/title: AI agents must emit telemetry
+    policies.kyverno.io/category: Observability
+    policies.kyverno.io/description: >-
+      Workloads labelled app.kubernetes.io/part-of=ai-agent must send OTLP to
+      the node-local collector agent and declare an owner. Untraceable agent
+      workloads produce cost and behaviour nobody can attribute.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-otlp-endpoint
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.labels.\"app.kubernetes.io/part-of\" || '' }}"
+            operator: Equals
+            value: ai-agent
+      validate:
+        message: >-
+          AI agent workloads must set OTEL_EXPORTER_OTLP_ENDPOINT on every
+          container. Point it at the node-local agent tier:
+          http://otel-agent-opentelemetry-collector.otel.svc:4317
+          (see docs/genai-instrumentation.md).
+        foreach:
+          - list: request.object.spec.containers
+            deny:
+              conditions:
+                all:
+                  - key: OTEL_EXPORTER_OTLP_ENDPOINT
+                    operator: AnyNotIn
+                    value: "{{ element.env[].name || `[]` }}"
+
+    - name: require-owner-label
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.labels.\"app.kubernetes.io/part-of\" || '' }}"
+            operator: Equals
+            value: ai-agent
+      validate:
+        message: >-
+          AI agent workloads must carry app.kubernetes.io/owner so token spend
+          and alerts can be attributed to a team.
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/owner: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ai-agent-content-capture-is-centrally-controlled
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: Deployment,StatefulSet,DaemonSet,Job,CronJob
+    policies.kyverno.io/title: Content capture may not be hardcoded
+    policies.kyverno.io/category: Data governance
+    policies.kyverno.io/description: >-
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT must come from the
+      observability-levels ConfigMap, never a literal in a manifest.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: no-hardcoded-content-capture
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.labels.\"app.kubernetes.io/part-of\" || '' }}"
+            operator: Equals
+            value: ai-agent
+      validate:
+        # This rule is what keeps the capture design honest. The control plane
+        # (scripts/12-observability-level.sh) guarantees capture is time-boxed,
+        # audited, and auto-expiring. A pod that hardcodes `value: "true"`
+        # sidesteps all three: the CronJob patches the ConfigMap, the pod
+        # ignores it, and prompt text keeps flowing with nothing to show it.
+        #
+        # Sourcing the value from the ConfigMap via envFrom is fine, and is
+        # what examples/genai-agent/ does. What is banned is a literal env var.
+        message: >-
+          Do not set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT as a
+          literal env var. It must come from the observability-levels ConfigMap
+          (envFrom), so that `make obs-capture` and the TTL expiry job actually
+          control it. A hardcoded value cannot be turned off.
+        foreach:
+          - list: request.object.spec.containers
+            deny:
+              conditions:
+                any:
+                  - key: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+                    operator: AnyIn
+                    value: "{{ element.env[].name || `[]` }}"

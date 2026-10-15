@@ -1,0 +1,84 @@
+# mTLS between the two collector tiers.
+#
+# Telemetry from an AI workload carries prompt and completion content. That
+# makes the agent -> gateway hop a data path worth authenticating, not just
+# encrypting: `tls.insecure: true` (what the single-tier collector used) means
+# anything that can reach the gateway's port can inject spans into your traces,
+# and anything on the path can read them.
+#
+# Both certs are signed by the homelab-ca ClusterIssuer from
+# cluster-issuers.yaml, so cert-manager puts the CA bundle in each secret as
+# ca.crt -- which is what makes mutual verification work in both directions:
+#   gateway receiver: client_ca_file: /etc/otel/tls/ca.crt  (verifies agents)
+#   agent exporter:   ca_file:        /etc/otel/tls/ca.crt  (verifies gateway)
+#
+# Swapping to a real internal PKI in staging/prod = change issuerRef here (or
+# override it in environments/<env>/values/), nothing else.
+#
+# Applied by scripts/08-platform-gateway.sh alongside the other platform-level
+# cert-manager resources.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otel-gateway-tls
+  namespace: otel
+spec:
+  secretName: otel-gateway-tls
+  duration: 2160h # 90d
+  renewBefore: 360h # 15d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # Rotate the key on renewal rather than re-signing the same one.
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  # The agents' loadbalancing exporter connects to individual gateway POD IPs
+  # resolved from EndpointSlices -- it never dials the Service name. Adding pod
+  # DNS forms here does NOT fix that, which was the original mistake: TLS
+  # verifies against whatever was dialled, and that is a bare IP:
+  #
+  #   x509: cannot validate certificate for 10.244.3.63, no IP SANs
+  #
+  # IP SANs cannot help either, since pod IPs change on every reschedule. The
+  # real fix lives on the client: `server_name_override` in the agent's
+  # exporter TLS block (gitops/apps/26-otel-agent.yaml) pins verification to
+  # the Service name below. These DNS names are what that override resolves
+  # against, so they still matter -- they just are not sufficient on their own.
+  dnsNames:
+    - otel-gateway-opentelemetry-collector
+    - otel-gateway-opentelemetry-collector.otel
+    - otel-gateway-opentelemetry-collector.otel.svc
+    - otel-gateway-opentelemetry-collector.otel.svc.cluster.local
+    - "*.otel-gateway-opentelemetry-collector.otel.svc.cluster.local"
+    - "*.otel.pod.cluster.local"
+  issuerRef:
+    name: homelab-ca
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: otel-agent-tls
+  namespace: otel
+spec:
+  secretName: otel-agent-tls
+  duration: 2160h # 90d
+  renewBefore: 360h # 15d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  # Client auth only: agents dial out, nothing dials them over TLS.
+  usages:
+    - client auth
+    - digital signature
+    - key encipherment
+  commonName: otel-agent
+  dnsNames:
+    - otel-agent-opentelemetry-collector.otel.svc.cluster.local
+  issuerRef:
+    name: homelab-ca
+    kind: ClusterIssuer

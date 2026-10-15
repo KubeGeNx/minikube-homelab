@@ -1,0 +1,402 @@
+{
+  "catalogue_version": 1,
+  "dependency_enabled": [],
+  "enabled": [
+    "cert-manager",
+    "external-secrets",
+    "kyverno",
+    "envoy-gateway",
+    "kube-prometheus-stack",
+    "seaweedfs",
+    "tempo",
+    "loki",
+    "mimir",
+    "alloy",
+    "velero",
+    "keda",
+    "vpa",
+    "rabbitmq",
+    "otel-gateway",
+    "otel-agent",
+    "olm"
+  ],
+  "entries": {
+    "agentgateway": {
+      "adapter": "helm",
+      "dependencies": [
+        "agentgateway-crds"
+      ],
+      "flag": "AGENTGATEWAY_ENABLED",
+      "manifest": "gitops/apps/18-agentgateway.yaml",
+      "namespace": "agentgateway-system",
+      "wave": 2
+    },
+    "agentgateway-crds": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "AGENTGATEWAY_ENABLED",
+      "manifest": "gitops/apps/17-agentgateway-crds.yaml",
+      "namespace": "agentgateway-system",
+      "wave": 1
+    },
+    "airflow": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "AIRFLOW_ENABLED",
+      "manifest": "gitops/apps/24-airflow.yaml",
+      "namespace": "airflow",
+      "wave": 2
+    },
+    "alloy": {
+      "adapter": "helm",
+      "dependencies": [
+        "kube-prometheus-stack",
+        "loki",
+        "mimir"
+      ],
+      "flag": "ALLOY_ENABLED",
+      "manifest": "gitops/apps/05-alloy.yaml",
+      "namespace": "alloy",
+      "wave": 4
+    },
+    "cert-manager": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "CERT_MANAGER_ENABLED",
+      "manifest": "gitops/apps/01-cert-manager.yaml",
+      "namespace": "cert-manager",
+      "wave": 1
+    },
+    "envoy-gateway": {
+      "adapter": "helm",
+      "dependencies": [
+        "cert-manager"
+      ],
+      "flag": "ENVOY_GATEWAY_ENABLED",
+      "manifest": "gitops/apps/06-envoy-gateway.yaml",
+      "namespace": "envoy-gateway-system",
+      "wave": 2
+    },
+    "external-secrets": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "EXTERNAL_SECRETS_ENABLED",
+      "manifest": "gitops/apps/03-external-secrets.yaml",
+      "namespace": "external-secrets",
+      "wave": 1
+    },
+    "gitlab": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "GITLAB_ENABLED",
+      "manifest": "gitops/apps/22-gitlab.yaml",
+      "namespace": "gitlab",
+      "wave": 1
+    },
+    "gitlab-runner": {
+      "adapter": "helm",
+      "dependencies": [
+        "gitlab"
+      ],
+      "flag": "GITLAB_RUNNER_ENABLED",
+      "manifest": "gitops/apps/23-gitlab-runner.yaml",
+      "namespace": "gitlab",
+      "wave": 2
+    },
+    "kagent": {
+      "adapter": "helm",
+      "dependencies": [
+        "kagent-crds"
+      ],
+      "flag": "KAGENT_ENABLED",
+      "manifest": "gitops/apps/15-kagent.yaml",
+      "namespace": "kagent",
+      "wave": 2
+    },
+    "kagent-crds": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "KAGENT_ENABLED",
+      "manifest": "gitops/apps/14-kagent-crds.yaml",
+      "namespace": "kagent",
+      "wave": 1
+    },
+    "keda": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "KEDA_ENABLED",
+      "manifest": "gitops/apps/19-keda.yaml",
+      "namespace": "keda",
+      "wave": 2
+    },
+    "kube-prometheus-stack": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "KUBE_PROMETHEUS_STACK_ENABLED",
+      "manifest": "gitops/apps/08-kube-prometheus-stack.yaml",
+      "namespace": "monitoring",
+      "wave": 2
+    },
+    "kubeflow": {
+      "adapter": "argocd-git",
+      "dependencies": [],
+      "flag": "KUBEFLOW_ENABLED",
+      "manifest": "gitops/special/16-kubeflow.yaml",
+      "namespace": "kubeflow",
+      "version": "KUBEFLOW_VERSION"
+    },
+    "kyverno": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "KYVERNO_ENABLED",
+      "manifest": "gitops/apps/20-kyverno.yaml",
+      "namespace": "kyverno",
+      "wave": 1
+    },
+    "loki": {
+      "adapter": "helm",
+      "dependencies": [
+        "kube-prometheus-stack",
+        "seaweedfs"
+      ],
+      "flag": "LOKI_ENABLED",
+      "manifest": "gitops/apps/11-loki.yaml",
+      "namespace": "logging",
+      "wave": 3
+    },
+    "metallb": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "METALLB_ENABLED",
+      "manifest": "gitops/apps/02-metallb.yaml",
+      "namespace": "metallb-system",
+      "wave": 1
+    },
+    "mimir": {
+      "adapter": "helm",
+      "dependencies": [
+        "kube-prometheus-stack",
+        "seaweedfs"
+      ],
+      "flag": "MIMIR_ENABLED",
+      "manifest": "gitops/apps/28-mimir.yaml",
+      "namespace": "mimir",
+      "wave": 3
+    },
+    "obi": {
+      "adapter": "helm",
+      "dependencies": [
+        "otel-agent"
+      ],
+      "flag": "OBI_ENABLED",
+      "manifest": "gitops/apps/29-obi.yaml",
+      "namespace": "obi",
+      "wave": 5
+    },
+    "olm": {
+      "adapter": "script",
+      "dependencies": [],
+      "flag": "OLM_ENABLED",
+      "handler": "scripts/06-olm.sh",
+      "namespace": "olm",
+      "version": "OLM_VERSION"
+    },
+    "otel-agent": {
+      "adapter": "helm",
+      "dependencies": [
+        "otel-gateway"
+      ],
+      "flag": "OTEL_COLLECTOR_ENABLED",
+      "manifest": "gitops/apps/26-otel-agent.yaml",
+      "namespace": "otel",
+      "wave": 5
+    },
+    "otel-gateway": {
+      "adapter": "helm",
+      "dependencies": [
+        "tempo"
+      ],
+      "flag": "OTEL_COLLECTOR_ENABLED",
+      "manifest": "gitops/apps/27-otel-gateway.yaml",
+      "namespace": "otel",
+      "wave": 4
+    },
+    "rabbitmq": {
+      "adapter": "helm",
+      "dependencies": [
+        "kube-prometheus-stack"
+      ],
+      "flag": "RABBITMQ_ENABLED",
+      "manifest": "gitops/apps/25-rabbitmq.yaml",
+      "namespace": "rabbitmq",
+      "wave": 2
+    },
+    "seaweedfs": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "SEAWEEDFS_ENABLED",
+      "manifest": "gitops/apps/12-seaweedfs.yaml",
+      "namespace": "seaweedfs",
+      "wave": 3
+    },
+    "tempo": {
+      "adapter": "helm",
+      "dependencies": [
+        "kube-prometheus-stack",
+        "seaweedfs"
+      ],
+      "flag": "TEMPO_ENABLED",
+      "manifest": "gitops/apps/04-tempo.yaml",
+      "namespace": "tracing",
+      "wave": 3
+    },
+    "velero": {
+      "adapter": "helm",
+      "dependencies": [
+        "seaweedfs"
+      ],
+      "flag": "VELERO_ENABLED",
+      "manifest": "gitops/apps/13-velero.yaml",
+      "namespace": "velero",
+      "wave": 4
+    },
+    "vpa": {
+      "adapter": "helm",
+      "dependencies": [],
+      "flag": "VPA_ENABLED",
+      "manifest": "gitops/apps/21-vpa.yaml",
+      "namespace": "vpa",
+      "wave": 2
+    }
+  },
+  "environment": "prod",
+  "namespaces": {
+    "alloy": "alloy",
+    "cert-manager": "cert-manager",
+    "envoy-gateway": "envoy-gateway-system",
+    "external-secrets": "external-secrets",
+    "keda": "keda",
+    "kube-prometheus-stack": "monitoring",
+    "kyverno": "kyverno",
+    "loki": "logging",
+    "mimir": "mimir",
+    "olm": "olm",
+    "otel-agent": "otel",
+    "otel-gateway": "otel",
+    "rabbitmq": "rabbitmq",
+    "seaweedfs": "seaweedfs",
+    "tempo": "tracing",
+    "velero": "velero",
+    "vpa": "vpa"
+  },
+  "provenance": {
+    "cert-manager": [
+      "envoy-gateway"
+    ],
+    "kube-prometheus-stack": [
+      "alloy",
+      "loki",
+      "mimir",
+      "rabbitmq",
+      "tempo"
+    ],
+    "loki": [
+      "alloy"
+    ],
+    "mimir": [
+      "alloy"
+    ],
+    "otel-gateway": [
+      "otel-agent"
+    ],
+    "seaweedfs": [
+      "loki",
+      "mimir",
+      "tempo",
+      "velero"
+    ],
+    "tempo": [
+      "otel-gateway"
+    ]
+  },
+  "requested": [
+    "alloy",
+    "cert-manager",
+    "envoy-gateway",
+    "external-secrets",
+    "keda",
+    "kube-prometheus-stack",
+    "kyverno",
+    "loki",
+    "mimir",
+    "olm",
+    "otel-agent",
+    "otel-gateway",
+    "rabbitmq",
+    "seaweedfs",
+    "tempo",
+    "velero",
+    "vpa"
+  ],
+  "routes": [
+    {
+      "enabled": true,
+      "file": "argocd.yaml",
+      "flag": "ALWAYS"
+    },
+    {
+      "enabled": true,
+      "file": "grafana.yaml",
+      "flag": "KUBE_PROMETHEUS_STACK_ENABLED"
+    },
+    {
+      "enabled": true,
+      "file": "prometheus.yaml",
+      "flag": "KUBE_PROMETHEUS_STACK_ENABLED"
+    },
+    {
+      "enabled": true,
+      "file": "seaweedfs.yaml",
+      "flag": "SEAWEEDFS_ENABLED"
+    },
+    {
+      "enabled": true,
+      "file": "tempo.yaml",
+      "flag": "TEMPO_ENABLED"
+    },
+    {
+      "enabled": true,
+      "file": "rabbitmq.yaml",
+      "flag": "RABBITMQ_ENABLED"
+    }
+  ],
+  "versions": {
+    "AGENTGATEWAY_VERSION": "v1.3.1",
+    "AIRFLOW_VERSION": "1.22.0",
+    "ALLOY_CHART_VERSION": "1.11.1",
+    "ARGOCD_CHART_VERSION": "10.4.0",
+    "CERT_MANAGER_VERSION": "v1.21.1",
+    "ENVOY_GATEWAY_VERSION": "v1.9.0",
+    "EXTERNAL_SECRETS_VERSION": "2.9.0",
+    "GATEWAY_API_VERSION": "v1.6.1",
+    "GITLAB_RUNNER_VERSION": "0.91.2",
+    "GITLAB_VERSION": "10.2.4",
+    "KAGENT_VERSION": "v0.1.5",
+    "KEDA_VERSION": "2.20.2",
+    "KUBEFLOW_VERSION": "v1.10.0",
+    "KUBE_PROMETHEUS_STACK_VERSION": "88.5.0",
+    "KYVERNO_VERSION": "3.8.2",
+    "LOKI_CHART_VERSION": "7.3.0",
+    "METALLB_VERSION": "0.16.1",
+    "MIMIR_CHART_VERSION": "6.2.0",
+    "OBI_CHART_VERSION": "0.13.0",
+    "OLM_VERSION": "v0.46.0",
+    "OTEL_COLLECTOR_CHART_VERSION": "0.172.0",
+    "RABBITMQ_CHART_VERSION": "16.0.14",
+    "SEAWEEDFS_CHART_VERSION": "4.37.0",
+    "SNAPSHOTTER_VERSION": "v8.6.0",
+    "TEMPO_CHART_VERSION": "1.61.3",
+    "VELERO_VERSION": "12.1.0",
+    "VPA_CHART_VERSION": "5.0.0"
+  }
+}

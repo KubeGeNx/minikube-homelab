@@ -1,0 +1,44 @@
+# dev: single replica per component, and zone-aware replication OFF.
+#
+# Zone awareness spreads ingesters/store-gateways across three zone-suffixed
+# StatefulSets. On a one-node minikube those "zones" are the same failure
+# domain, so it triples the pod count for zero resilience.
+mimir:
+  structuredConfig:
+    limits:
+      compactor_blocks_retention_period: 24h
+    # With one ingester the default replication factor of 3 cannot be
+    # satisfied and writes fail.
+    ingester:
+      ring:
+        replication_factor: 1
+distributor:
+  replicas: 1
+ingester:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    size: 5Gi
+querier:
+  replicas: 1
+query_frontend:
+  replicas: 1
+query_scheduler:
+  replicas: 1
+store_gateway:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    size: 5Gi
+compactor:
+  replicas: 1
+  persistentVolume:
+    size: 5Gi
+ruler:
+  replicas: 1
+gateway:
+  replicas: 1
+overrides_exporter:
+  replicas: 1

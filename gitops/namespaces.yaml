@@ -59,7 +59,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: minio
+  name: seaweedfs
 ---
 apiVersion: v1
 kind: Namespace
@@ -70,6 +70,29 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: kagent
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rabbitmq
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mimir
+---
+# OBI needs hostPID + hostNetwork, so this namespace is labelled privileged
+# for Pod Security Admission. Argo CD applies those labels via the OBI
+# Application's managedNamespaceMetadata (gitops/apps/29-obi.yaml).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: obi
 ---
 # Kubeflow's own kustomize bundle creates several more namespaces beyond
 # this one (knative-serving, kserve, auth, etc.) as part of its manifests --

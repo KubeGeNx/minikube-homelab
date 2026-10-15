@@ -1,0 +1,310 @@
+# OpenTelemetry Collector -- TIER 2: gateway / sampler (StatefulSet).
+#
+# Tier 1 is the per-node agent DaemonSet (26-otel-agent.yaml). Agents enrich,
+# redact, and derive RED metrics from 100% of spans, then forward here using
+# the loadbalancing exporter keyed on trace ID. That key is the whole point:
+# tail sampling can only decide about a trace if every span of that trace
+# reaches the SAME gateway pod. Round-robin between gateways would give each
+# pod a partial view and produce incoherent sampling decisions.
+#
+# What lives here and nowhere else:
+#   - tail_sampling: keep every error / slow / expensive / deep-loop trace,
+#     sample the boring remainder.
+#   - the only egress to the trace backend.
+#
+# What deliberately does NOT live here:
+#   - k8sattributes. After the agent hop the connection comes from the agent,
+#     not the workload, so pod-IP association would resolve to the wrong pod.
+#     Enrichment belongs on the node.
+#   - spanmetrics / servicegraph. They sit in front of the sampler, in the
+#     agent, so RED metrics count real traffic instead of the sampled subset.
+#     See 26-otel-agent.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-gateway
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Wave 4: after Tempo (wave 3), which it exports to, and BEFORE the agents
+    # (wave 5) whose loadbalancing exporter resolves this tier's endpoints.
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-collector
+    targetRevision: ${OTEL_COLLECTOR_CHART_VERSION}
+    helm:
+      releaseName: otel-gateway
+      values: |
+        mode: statefulset
+        replicaCount: 2
+        image:
+          repository: otel/opentelemetry-collector-contrib
+        command:
+          name: otelcol-contrib
+
+        # tail_sampling holds every in-flight trace in memory for decision_wait
+        # before deciding, so this tier is memory-bound, not CPU-bound. Size the
+        # limit from num_traces x average trace size, and keep the memory_limiter
+        # percentages below the container limit.
+        resources:
+          requests:
+            cpu: 200m
+            memory: 1Gi
+          limits:
+            memory: 2Gi
+
+        # An evicted gateway loses its in-flight decision windows, so protect
+        # against voluntary disruption and spread across nodes.
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: opentelemetry-collector
+                app.kubernetes.io/instance: otel-gateway
+        autoscaling:
+          enabled: true
+          minReplicas: 2
+          maxReplicas: 6
+          targetMemoryUtilizationPercentage: 70
+
+        statefulset:
+          podManagementPolicy: Parallel
+          # Backing store for the sending_queue below. Without a real volume the
+          # queue lives in memory and a restart silently drops whatever it held.
+          volumeClaimTemplates:
+            - metadata:
+                name: queue
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: standard
+                resources:
+                  requests:
+                    storage: 10Gi
+
+        extraVolumeMounts:
+          - name: queue
+            mountPath: /var/lib/otelcol/queue
+          - name: tls
+            mountPath: /etc/otel/tls
+            readOnly: true
+        extraVolumes:
+          - name: tls
+            secret:
+              # Issued by gitops/platform/otel-mtls.yaml off the homelab-ca
+              # ClusterIssuer. Applied by scripts/08-platform-gateway.sh.
+              secretName: otel-gateway-tls
+
+        # Runtime verbosity knobs, shared with the agent tier and the apps.
+        # optional: true so the collector still starts before the ConfigMap
+        # exists (first install, or a namespace that never opted in).
+        extraEnvsFrom:
+          - configMapRef:
+              name: observability-levels
+              optional: true
+
+        ports:
+          otlp:
+            enabled: true
+          otlp-http:
+            enabled: true
+          jaeger-compact:
+            enabled: false
+          jaeger-thrift:
+            enabled: false
+          jaeger-grpc:
+            enabled: false
+          zipkin:
+            enabled: false
+
+        config:
+          extensions:
+            file_storage:
+              directory: /var/lib/otelcol/queue
+              # Without this the collector refuses to start when the directory
+              # is absent ("directory must exist"), which turns any mistake in
+              # the volumeClaimTemplate above into a crash loop rather than a
+              # degraded queue.
+              create_directory: true
+              # Reclaim space as the queue drains rather than growing forever.
+              compaction:
+                on_start: true
+                directory: /var/lib/otelcol/queue
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                  tls:
+                    cert_file: /etc/otel/tls/tls.crt
+                    key_file: /etc/otel/tls/tls.key
+                    client_ca_file: /etc/otel/tls/ca.crt
+                http:
+                  endpoint: 0.0.0.0:4318
+                  tls:
+                    cert_file: /etc/otel/tls/tls.crt
+                    key_file: /etc/otel/tls/tls.key
+                    client_ca_file: /etc/otel/tls/ca.crt
+          processors:
+            # memory_limiter FIRST: it sheds by refusing data before
+            # tail_sampling buffers it, which is the component most able to
+            # exhaust this pod.
+            memory_limiter:
+              check_interval: 5s
+              limit_percentage: 75
+              spike_limit_percentage: 20
+            batch:
+              timeout: 5s
+              send_batch_size: 1024
+            tail_sampling:
+              # How long to wait for the rest of a trace before deciding. Longer
+              # catches more late spans and costs proportionally more memory;
+              # shorter risks deciding on an incomplete trace.
+              decision_wait: 15s
+              num_traces: 100000
+              expected_new_traces_per_sec: 1000
+              # First matching policy wins the "sample" vote -- any policy
+              # voting to keep is enough, so order is about readability, not
+              # precedence. The first four exist so that no interesting agent
+              # run is ever thrown away; the fifth is what makes the volume
+              # affordable at all.
+              policies:
+                - name: errors
+                  type: status_code
+                  status_code:
+                    status_codes: [ERROR]
+                - name: slow
+                  type: latency
+                  latency:
+                    threshold_ms: 5000
+                - name: expensive-generations
+                  # A large completion is both the costly case and the one most
+                  # worth reading back. gen_ai.usage.output_tokens comes from
+                  # the instrumentation contract in docs/genai-instrumentation.md.
+                  type: numeric_attribute
+                  numeric_attribute:
+                    key: gen_ai.usage.output_tokens
+                    min_value: 4000
+                - name: deep-agent-loops
+                  # A runaway agent loop shows up as span count long before it
+                  # shows up as an error.
+                  type: span_count
+                  span_count:
+                    min_spans: 50
+                - name: baseline
+                  type: probabilistic
+                  probabilistic:
+                    # Runtime knob from the observability-levels ConfigMap.
+                    # The ":-10" default matters: extraEnvsFrom is optional, so
+                    # a bare ${env:...} would expand to empty and crash-loop the
+                    # tier on any cluster where that ConfigMap is absent.
+                    # Verified: the default form validates with the var unset.
+                    sampling_percentage: ${env:OBS_TAIL_BASELINE_PERCENTAGE:-10}
+          connectors:
+            # Content-bearing traces go to a DIFFERENT TENANT, not just a
+            # different retention setting. This is what makes the capture
+            # toggle in W5 safe to turn on: prompt/completion text lands in
+            # `agents-content` (7d, separately addressable) rather than sitting
+            # in the 30d tenant everyone reads by default.
+            #
+            # The marker is a span attribute the instrumentation sets whenever
+            # it attaches content -- see docs/genai-instrumentation.md. Routing
+            # on the attribute rather than on the presence of content events is
+            # deliberate: OTTL's span context cannot inspect a span's events,
+            # so a marker is the only reliable signal at this layer.
+            #
+            # Until an instrumented app sets it, nothing matches and everything
+            # takes default_pipelines -- which is correct, because with capture
+            # off there is no content to separate.
+            routing:
+              error_mode: ignore
+              default_pipelines: [traces/agents]
+              table:
+                - context: span
+                  condition: 'attributes["gen_ai.capture.content"] == true'
+                  pipelines: [traces/content]
+          exporters:
+            otlp/tempo:
+              # tempo-distributed's write path. The monolith's single service
+              # is gone; distributor is the ingest component.
+              endpoint: tempo-distributor.tracing.svc:4317
+              tls:
+                insecure: true
+              headers:
+                # Tempo now runs multitenancy_enabled, so X-Scope-OrgID is
+                # mandatory on every write -- without it the distributor
+                # rejects the batch outright.
+                #
+                # Everything lands in the `agents` tenant for now. W8 adds the
+                # routing connector that diverts content-bearing traces to
+                # `agents-content`, which is the tenant with 7d retention.
+                X-Scope-OrgID: agents
+              # Survive a Tempo restart instead of dropping what was in flight.
+              sending_queue:
+                enabled: true
+                storage: file_storage
+                num_consumers: 10
+                queue_size: 10000
+              retry_on_failure:
+                enabled: true
+                initial_interval: 5s
+                max_interval: 30s
+                max_elapsed_time: 300s
+            otlp/tempo-content:
+              # Same Tempo, different tenant. Retention for `agents-content` is
+              # set to 7d in gitops/apps/04-tempo.yaml's per_tenant_overrides.
+              endpoint: tempo-distributor.tracing.svc:4317
+              tls:
+                insecure: true
+              headers:
+                X-Scope-OrgID: agents-content
+              sending_queue:
+                enabled: true
+                storage: file_storage
+                num_consumers: 5
+                queue_size: 5000
+              retry_on_failure:
+                enabled: true
+          service:
+            extensions: [health_check, file_storage]
+            telemetry:
+              logs:
+                level: ${env:OBS_COLLECTOR_LOG_LEVEL:-info}
+            # metrics/logs are nulled here on purpose: the agent tier owns both.
+            # Helm removes a key whose override value is null.
+            pipelines:
+              # Sample FIRST, then route. Doing it the other way round would
+              # run two independent tail_sampling instances, each with a
+              # partial view of the trace, and they could disagree about
+              # whether to keep it.
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, tail_sampling]
+                exporters: [routing]
+              traces/agents:
+                receivers: [routing]
+                processors: [batch]
+                exporters: [otlp/tempo]
+              traces/content:
+                receivers: [routing]
+                processors: [batch]
+                exporters: [otlp/tempo-content]
+              metrics: null
+              logs: null
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: otel
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,12 @@
+version: 1
+invariants:
+  # Agent enrichment and redaction precede forwarding away from the node.
+  agent_processor_order: [k8sattributes, resourcedetection, redaction, batch]
+  gateway_processor_order: [memory_limiter, tail_sampling]
+  # Connectors derive full-fidelity metrics before gateway tail sampling.
+  pre_sampling_connectors: [spanmetrics, servicegraph]
+  derived_metrics_exporter: otlphttp/mimir
+  # Each tenant has one explicitly named exporter and retention domain.
+  tenant_exporters:
+    otlp/tempo: agents
+    otlp/tempo-content: agents-content

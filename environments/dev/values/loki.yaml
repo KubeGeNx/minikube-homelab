@@ -1,0 +1,29 @@
+# dev: one of each. SimpleScalable still means three roles (read/write/backend),
+# which is deliberate -- collapsing to singleBinary here would change the code
+# path under test.
+write:
+  replicas: 1
+  persistence:
+    size: 5Gi
+read:
+  replicas: 1
+  persistence:
+    size: 5Gi
+backend:
+  replicas: 1
+  persistence:
+    size: 5Gi
+gateway:
+  replicas: 1
+loki:
+  limits_config:
+    retention_period: 24h
+  runtimeConfig:
+    overrides:
+      agents-content:
+        retention_period: 6h
+# memcached is two more pods buying nothing at dev query volume.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false

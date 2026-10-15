@@ -1,0 +1,33 @@
+# dev: same distributed topology, one replica per component. The point of
+# keeping it distributed rather than reverting to the monolith is that the
+# service names, the multitenancy headers, and the S3 path are identical to
+# prod -- so a misconfigured tenant or bucket fails here, not there.
+ingester:
+  replicas: 1
+  # Tempo defaults to replication_factor 3. With a single ingester the ring can
+  # never reach quorum, and queries fail with:
+  #   forIngesterRings: error getting replication set for ring (0):
+  #   too many unhealthy instances in the ring
+  # Writes appear to succeed, so this only shows up on read -- exactly the same
+  # trap as Mimir's ingester RF, which is set to 1 in values/mimir.yaml.
+  config:
+    replication_factor: 1
+  persistence:
+    size: 2Gi
+distributor:
+  replicas: 1
+querier:
+  replicas: 1
+queryFrontend:
+  replicas: 1
+compactor:
+  replicas: 1
+# Short retention: minikube is not an archive.
+overrides:
+  defaults:
+    compaction:
+      block_retention: 24h
+per_tenant_overrides:
+  agents-content:
+    compaction:
+      block_retention: 6h

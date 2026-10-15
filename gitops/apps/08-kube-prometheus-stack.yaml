@@ -18,9 +18,34 @@ spec:
       values: |
         prometheus:
           prometheusSpec:
-            retention: 7d
-            # Alloy remote-writes scraped metrics here (gitops/apps/05-alloy.yaml)
-            enableRemoteWriteReceiver: true
+            # Prometheus is no longer the long-term store -- Mimir is. Its job
+            # narrows to scraping ServiceMonitors and forwarding. 6h of local
+            # TSDB is enough to ride out a Mimir blip via the remote-write WAL
+            # without keeping a second copy of everything.
+            retention: 6h
+            remoteWrite:
+              - url: http://mimir-gateway.mimir.svc/api/v1/push
+                # The default queue drops on sustained backpressure. Retrying
+                # on 429 is what makes the WAL actually cover a Mimir restart.
+                queueConfig:
+                  capacity: 10000
+                  # maxSamplesPerSend, NOT maxSamples. The wrong name is not
+                  # rejected at apply time -- it makes Argo CD's structured
+                  # merge diff fail outright:
+                  #   ComparisonError: ... .spec.remoteWrite[0].queueConfig
+                  #   .maxSamples: field not declared in schema
+                  # The Application then sits at sync status Unknown and stops
+                  # applying ANY change to this chart, which silently withheld
+                  # the whole datasource/correlation config too. A typo in one
+                  # field froze the entire component.
+                  maxSamplesPerSend: 2000
+                  maxShards: 50
+                  retryOnRateLimit: true
+            # Nothing remote-writes INTO Prometheus any more -- Alloy now
+            # writes to Mimir directly (gitops/apps/05-alloy.yaml). Leaving the
+            # receiver on would be an open, unauthenticated write endpoint for
+            # no reason.
+            enableRemoteWriteReceiver: false
             resources:
               requests:
                 cpu: 100m
@@ -32,25 +57,146 @@ spec:
                   accessModes: ["ReadWriteOnce"]
                   resources:
                     requests:
-                      storage: 10Gi
+                      # 6h of retention needs far less than the old 10Gi.
+                      storage: 5Gi
         grafana:
           enabled: true
+          sidecar:
+            datasources:
+              # The chart marks its own Prometheus datasource isDefault, and
+              # Mimir below also claims it -- two defaults is undefined
+              # behaviour in Grafana, and the one that wins is whichever the
+              # provisioner happens to load last. Mimir is the long-term store
+              # and must be the default, so the chart's claim is dropped.
+              # Prometheus remains available by uid for its 6h of local data.
+              defaultDatasourceEnabled: false
           adminPassword: HomelabGrafana123!
           persistence:
             enabled: true
             storageClassName: standard
             size: 5Gi
-          # Loki + Tempo pre-wired as datasources (gitops/apps/11-loki-stack.yaml,
-          # 04-tempo.yaml). URLs are the in-cluster service DNS names.
+          # Datasources for the three backends. Explicit uids because the
+          # correlation links below (tracesToLogsV2, tracesToMetrics,
+          # serviceMap, derivedFields, exemplarTraceIdDestinations) reference
+          # datasources BY uid -- letting Grafana autogenerate them would make
+          # every one of those jumps unresolvable.
+          #
+          # Tempo and Loki run multitenancy, so each datasource pins a tenant
+          # via X-Scope-OrgID. Only `agents` is wired up here.
+          #
+          # ---------------------------------------------------------------
+          # THE agents-content DATASOURCE IS NOT DEFINED HERE, AND THAT IS A
+          # CONSTRAINT, NOT AN OVERSIGHT.
+          #
+          # The plan called for it to be restricted to a `content-viewer` role
+          # via Grafana RBAC. Datasource-level permissions are a Grafana
+          # ENTERPRISE feature; this stack runs OSS (grafana/grafana:13.2.0,
+          # verified on the running cluster), where any signed-in user can
+          # query any datasource in their org. Adding a content datasource
+          # here would expose prompt/completion text to every Grafana user
+          # while looking like it was access-controlled.
+          #
+          # The OSS-compatible options, for whoever picks this up:
+          #   1. Grafana ORGS. Datasources are per-org and users are members
+          #      of orgs with a role. Provision the content datasource with
+          #      `orgId: 2` and add only authorised users to that org. This is
+          #      real isolation in OSS and is the recommended path.
+          #   2. Don't expose it in Grafana at all -- query the content tenant
+          #      through the Tempo/Loki APIs with a separately held token.
+          #   3. Grafana Enterprise/Cloud, where the original design works.
+          # ---------------------------------------------------------------
           additionalDataSources:
             - name: Loki
+              uid: loki
               type: loki
-              url: http://loki-stack.logging.svc:3100
+              url: http://loki-gateway.logging.svc
               access: proxy
+              jsonData:
+                httpHeaderName1: X-Scope-OrgID
+                # LOG -> TRACE. Loki 3 carries trace_id as structured
+                # metadata, so this matches a label rather than regex-scraping
+                # the log line -- which is both faster and immune to format
+                # changes in the message itself.
+                derivedFields:
+                  - name: TraceID
+                    matcherType: label
+                    matcherRegex: trace_id
+                    url: "${__value.raw}"
+                    datasourceUid: tempo
+                    urlDisplayLabel: View trace
+              secureJsonData:
+                httpHeaderValue1: agents
             - name: Tempo
+              uid: tempo
               type: tempo
-              url: http://tempo.tracing.svc:3100
+              # query-frontend serves reads; the distributor only ingests.
+              url: http://tempo-query-frontend.tracing.svc:3200
               access: proxy
+              jsonData:
+                httpHeaderName1: X-Scope-OrgID
+                # TRACE -> LOGS. The time shift matters: a log line is written
+                # at some point during the span, not at its start instant, and
+                # without a window either side the jump lands on an empty
+                # result and looks broken.
+                tracesToLogsV2:
+                  datasourceUid: loki
+                  spanStartTimeShift: -5m
+                  spanEndTimeShift: 5m
+                  filterByTraceID: true
+                  filterBySpanID: false
+                  tags:
+                    # service.name -> service_name. This mapping only holds
+                    # because k8sattributes sets the resource attribute in the
+                    # agent tier. A workload that overrides OTEL_SERVICE_NAME
+                    # to something the log labels don't carry makes this jump
+                    # silently return nothing.
+                    - key: service.name
+                      value: service_name
+                # TRACE -> METRICS, using the spanmetrics the agent tier
+                # derives PRE-sampling, so these rates are real traffic rather
+                # than the ~10% that survived tail sampling.
+                tracesToMetrics:
+                  datasourceUid: mimir
+                  spanStartTimeShift: -5m
+                  spanEndTimeShift: 5m
+                  tags:
+                    - key: service.name
+                      value: service_name
+                  queries:
+                    - name: Request rate
+                      query: sum(rate(traces_span_metrics_calls_total{$__tags}[$__rate_interval]))
+                    - name: Error rate
+                      query: sum(rate(traces_span_metrics_calls_total{$__tags,status_code="STATUS_CODE_ERROR"}[$__rate_interval]))
+                    - name: p95 duration
+                      query: histogram_quantile(0.95, sum(rate(traces_span_metrics_duration_seconds_bucket{$__tags}[$__rate_interval])) by (le))
+                # SERVICE MAP. Reads traces_service_graph_request_* -- produced
+                # by the servicegraph connector, NOT by spanmetrics. Without
+                # that connector this panel is permanently empty.
+                serviceMap:
+                  datasourceUid: mimir
+                nodeGraph:
+                  enabled: true
+              secureJsonData:
+                httpHeaderValue1: agents
+            # Long-term metrics. The stack's own Prometheus datasource stays
+            # and still works, but it only holds 6h -- anything historical has
+            # to be queried here, which is why this is the default.
+            - name: Mimir
+              uid: mimir
+              type: prometheus
+              url: http://mimir-gateway.mimir.svc/prometheus
+              access: proxy
+              isDefault: true
+              jsonData:
+                timeInterval: 30s
+                # METRIC -> TRACE. Requires exemplars to survive the whole
+                # path: emitted by the spanmetrics connector (exemplars.enabled
+                # in 26-otel-agent.yaml) and stored by Mimir
+                # (max_global_exemplars_per_user in 28-mimir.yaml, which
+                # defaults to 0 = silently discard).
+                exemplarTraceIdDestinations:
+                  - name: trace_id
+                    datasourceUid: tempo
         alertmanager:
           enabled: true
           alertmanagerSpec:

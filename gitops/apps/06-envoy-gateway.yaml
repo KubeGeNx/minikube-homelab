@@ -20,6 +20,12 @@ spec:
     targetRevision: ${ENVOY_GATEWAY_VERSION}
     helm:
       releaseName: eg
+      # Gateway API CRDs are installed by scripts/02-foundational-crds.sh;
+      # the chart must not replace that standard-channel bundle with its
+      # experimental-channel CRDs or safe-upgrade policy.
+      values: |
+        crds:
+          enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: envoy-gateway-system

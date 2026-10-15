@@ -1,6 +1,25 @@
-# Grafana Tempo (monolithic): traces backend. Receives OTLP (from Alloy)
-# and is wired into Grafana as a datasource via
-# gitops/apps/08-kube-prometheus-stack.yaml's additionalDataSources.
+# Grafana Tempo -- DISTRIBUTED, on object storage.
+#
+# Replaces the monolithic `tempo` chart. The monolith kept blocks on a single
+# 10Gi PVC: no HA, no horizontal read path, and retention capped by disk size.
+# This splits into distributor / ingester / querier / query-frontend /
+# compactor with SeaweedFS underneath, so retention is a policy decision rather
+# than a disk-space accident.
+#
+# TWO TENANTS, which is the mechanism behind the content policy:
+#   agents          -- normal telemetry, 30d
+#   agents-content  -- traces carrying prompt/completion content, 7d
+# multitenancyEnabled makes `X-Scope-OrgID` mandatory on every read and write.
+# The collector gateway sets it on export; Grafana sets it per datasource, and
+# the content datasource is the one W4 puts behind an RBAC role.
+#
+# The metrics-generator is deliberately DISABLED. Tempo can derive span metrics
+# and service graphs itself, but the otel-agent tier already does that with the
+# spanmetrics/servicegraph connectors -- and it does it in front of the
+# sampler, so its numbers reflect 100% of traffic. Tempo's generator only ever
+# sees what survived tail sampling. Enabling both would publish two
+# contradictory sets of RED metrics with similar names, which is a genuinely
+# nasty thing to debug.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -14,27 +33,131 @@ spec:
   project: default
   source:
     repoURL: https://grafana.github.io/helm-charts
-    chart: tempo
+    chart: tempo-distributed
     targetRevision: ${TEMPO_CHART_VERSION}
     helm:
       releaseName: tempo
       values: |
-        persistence:
-          enabled: true
-          storageClassName: standard
-          size: 10Gi
-        tempo:
+        # Every read and write must carry X-Scope-OrgID once this is on.
+        multitenancyEnabled: true
+        # Grafana derives Tempo search streaming from the datasource HTTP URL
+        # (port 3200). Enable Tempo's HTTP streaming endpoint rather than
+        # making Grafana attempt gRPC against that port.
+        stream_over_http_enabled: true
+
+        traces:
+          otlp:
+            grpc:
+              enabled: true
+            http:
+              enabled: true
+
+        storage:
+          trace:
+            backend: s3
+            s3:
+              bucket: tempo
+              endpoint: seaweedfs-s3.seaweedfs.svc:8333
+              region: us-east-1
+              access_key: homelab-admin
+              secret_key: HomelabSeaweedAdminKey123!
+              # In-cluster SeaweedFS speaks plain HTTP; insecure here means "no
+              # TLS on the S3 connection", not "skip verification".
+              insecure: true
+              forcepathstyle: true
+
+        # 30d default. The content tenant is cut to 7d below -- prompt and
+        # completion text is the shortest-lived thing in the platform.
+        overrides:
+          defaults:
+            compaction:
+              block_retention: 720h
+        # A per-tenant override block REPLACES that tenant's limits wholesale --
+        # it does not merge with `overrides.defaults`. Specifying only
+        # block_retention here therefore set every other limit to zero, and
+        # Tempo rejected every write to this tenant:
+        #
+        #   RATE_LIMITED: batch size (1506 bytes) exceeds ingestion limit
+        #   (local: 0 bytes/s, global: 0 bytes/s, burst: 0 bytes)
+        #   for user agents-content
+        #
+        # Nastier than it sounds: the collector's routing was working
+        # perfectly, the gateway logged "Exporting failed. Dropping data", and
+        # the tenant simply stayed empty -- so it looked like the content
+        # routing was broken rather than the tenant's limits. The chart's own
+        # values file warns that all values must be given for each per-tenant
+        # block; these mirror Tempo's defaults.
+        per_tenant_overrides:
+          agents-content:
+            compaction:
+              block_retention: 168h
+            ingestion:
+              rate_limit_bytes: 15000000
+              burst_size_bytes: 20000000
+              max_traces_per_user: 10000
+            global:
+              max_bytes_per_trace: 5000000
+
+        distributor:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+
+        # Quorum-based: with replication_factor 3 the ring tolerates losing
+        # one ingester without dropping writes.
+        ingester:
+          replicas: 3
+          persistence:
+            enabled: true
+            storageClass: standard
+            size: 10Gi
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+
+        compactor:
+          replicas: 1
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+
+        querier:
+          replicas: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+
+        queryFrontend:
+          replicas: 1
           resources:
             requests:
               cpu: 50m
-              memory: 256Mi
-          receivers:
-            otlp:
-              protocols:
-                grpc:
-                  endpoint: 0.0.0.0:4317
-                http:
-                  endpoint: 0.0.0.0:4318
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+
+        # See header: the otel-agent tier owns span metrics and service
+        # graphs, pre-sampling. Turning this on would double-publish them.
+        metricsGenerator:
+          enabled: false
+
+        # The chart ships memcached for query caching; useful, but it is
+        # another stateful thing to run. Off until query latency justifies it.
+        memcached:
+          enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: tracing
