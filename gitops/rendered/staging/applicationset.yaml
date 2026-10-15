@@ -616,6 +616,51 @@ spec:
           \ alive it would process every\n      # OTLP metric a SECOND time alongside metrics/otlp above\
           \ and dump\n      # it all to stdout. Helm removes a key whose override is null.\n      metrics:\
           \ null\n      # Alloy owns log collection (gitops/apps/05-alloy.yaml).\n      logs: null\n"
+      - component: obi
+        wave: '5'
+        namespace: obi
+        repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+        chart: opentelemetry-ebpf-instrumentation
+        targetRevision: 0.13.0
+        releaseName: obi
+        values: "# ---------------------------------------------------------------\n# SECURITY POSTURE\n\
+          #\n# privileged: false switches the chart to a least-privilege container:\n# it drops ALL capabilities\
+          \ and adds back only what eBPF actually\n# needs -- BPF, PERFMON, SYS_PTRACE, NET_RAW, CHECKPOINT_RESTORE,\n\
+          # DAC_READ_SEARCH (+ NET_ADMIN, added automatically because context\n# propagation is on) --\
+          \ with readOnlyRootFilesystem.\n#\n# SYS_RESOURCE is deliberately NOT added: it is only needed\
+          \ on kernels\n# older than 5.11 to raise the locked-memory limit, and this node runs\n# 6.12.\n\
+          #\n# What cannot be given up: hostPID and hostNetwork. The chart sets both\n# unconditionally,\
+          \ because attaching uprobes to other processes\n# requires seeing them. That is inherent to\
+          \ eBPF instrumentation, not a\n# chart shortcut, and it is the main thing to weigh before enabling\n\
+          # this in production. The namespace needs a permissive Pod Security\n# Admission label to accept\
+          \ it.\n# ---------------------------------------------------------------\nprivileged: false\n\
+          \n# Injects W3C trace context at the kernel level so OBI spans can join\n# traces started by\
+          \ an instrumented service. This is also what pulls in\n# NET_ADMIN above -- turn it off if that\
+          \ capability is unacceptable and\n# you can live with disconnected OBI spans.\ncontextPropagation:\n\
+          \  enabled: true\n\nresources:\n  requests:\n    cpu: 100m\n    memory: 256Mi\n  limits:\n \
+          \   memory: 512Mi\n\n# Verbosity comes from the same ConfigMap as everything else. OBI reads\n\
+          # OTEL_EBPF_* environment overrides on top of its config file.\nenvValueFrom:\n  OTEL_EBPF_LOG_LEVEL:\n\
+          \    configMapKeyRef:\n      name: observability-levels\n      key: OBS_COLLECTOR_LOG_LEVEL\n\
+          \      optional: true\n\nconfig:\n  create: true\n  data:\n    # Export to the node-local AGENT,\
+          \ not the gateway. OBI's telemetry\n    # then gets the same k8sattributes enrichment, redaction,\
+          \ and\n    # pre-sampling spanmetrics as everything else.\n    #\n    # NOTE the chart's default\
+          \ is http://${HOST_IP}:4317, which would\n    # NOT work here: the agent is a ClusterIP Service\
+          \ with no hostPort,\n    # so nothing is listening on the node IP. The Service DNS name is\n\
+          \    # required, and internalTrafficPolicy: Local still keeps the hop\n    # on-node.\n    otel_traces_export:\n\
+          \      endpoint: http://otel-agent-opentelemetry-collector.otel.svc.cluster.local:4317\n   \
+          \ otel_metrics_export:\n      endpoint: http://otel-agent-opentelemetry-collector.otel.svc.cluster.local:4318\n\
+          \n    attributes:\n      kubernetes:\n        enable: true\n\n    # Scoped to the namespace\
+          \ where sample workloads run. Widen\n    # deliberately -- instrumenting every namespace means\
+          \ attaching\n    # probes to the platform's own components.\n    discovery:\n      instrument:\n\
+          \        - k8s_namespace: default\n      exclude_instrument:\n        # Never instrument the\
+          \ telemetry pipeline with itself. OBI\n        # watching the collector, which forwards OBI's\
+          \ own spans,\n        # is a feedback loop that shows up as unexplained load.\n        - k8s_namespace:\
+          \ otel\n        - k8s_namespace: monitoring\n        - k8s_namespace: tracing\n        - k8s_namespace:\
+          \ logging\n        - k8s_namespace: mimir\n\n    # Network-flow metrics are a different signal\
+          \ with very different\n    # cardinality. Left off; enable only with a specific question in\n\
+          \    # mind.\n    # network:\n    #   enable: true\n\n    # The chart defaults to exposing a\
+          \ Prometheus endpoint on :9090.\n    # Not used here -- metrics leave via OTLP to the agent,\
+          \ and a\n    # second export path would double-count.\n    prometheus_export: null\n"
   template:
     metadata:
       name: '{{.component}}'

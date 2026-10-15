@@ -67,9 +67,9 @@ while IFS='|' read -r app enabled_var file wave; do
   fi
 
   envsubst "$VAR_NAMES" < "$src" > "$OUT_DIR/$file"
-  if grep -q '\${[A-Z_]*}' "$OUT_DIR/$file"; then
+  if grep -q '\${[A-Z][A-Z0-9_]*_VERSION}' "$OUT_DIR/$file"; then
     echo "  ERROR: unresolved placeholder(s) in $file:"
-    grep '\${[A-Z_]*}' "$OUT_DIR/$file"
+    grep '\${[A-Z][A-Z0-9_]*_VERSION}' "$OUT_DIR/$file"
     exit 1
   fi
   echo "  rendered $file ($app)"

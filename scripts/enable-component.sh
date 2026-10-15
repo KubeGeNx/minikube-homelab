@@ -9,7 +9,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+ENV_NAME="${ENV:-dev}"
 ENV_FILE="$ROOT_DIR/components.env"
+if [ "$ENV_NAME" != "dev" ]; then
+  ENV_FILE="$ROOT_DIR/environments/$ENV_NAME/components.env"
+fi
 
 # component -> components.env flag (Helm components come from
 # lib-components.sh's table; kubeflow/olm are the special non-Helm ones).
@@ -44,12 +48,21 @@ resolve() { case " $RESOLVED " in *" $1 "*) return ;; esac; RESOLVED="$RESOLVED 
 
 APPLY=true
 COMPONENTS=""
-for arg in "$@"; do
-  case "$arg" in
-    --no-apply) APPLY=false ;;
-    *) COMPONENTS="$COMPONENTS $arg" ;;
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-apply) APPLY=false; shift ;;
+    --env)
+      [ "$#" -ge 2 ] || { echo "ERROR: --env requires a name" >&2; exit 1; }
+      ENV_NAME="$2"
+      shift 2
+      ;;
+    *) COMPONENTS="$COMPONENTS $1"; shift ;;
   esac
 done
+[ -n "$ENV_NAME" ] && [ -d "$ROOT_DIR/environments/$ENV_NAME" ] || {
+  echo "ERROR: unknown environment '${ENV_NAME:-}'" >&2
+  exit 1
+}
 [ -n "${COMPONENTS// /}" ] || { echo "Usage: $0 [--no-apply] <component>..."; exit 1; }
 
 for comp in $COMPONENTS; do
@@ -60,7 +73,18 @@ done
 
 echo "Enabling requested flags:$RESOLVED"
 for comp in $RESOLVED; do
-  enable_flag "$(flag_of "$comp")"
+  flag="$(flag_of "$comp")"
+  if [ "$ENV_NAME" = "dev" ]; then
+    enable_flag "$flag"
+  elif [ -f "$ENV_FILE" ] && grep -q "^${flag}=" "$ENV_FILE"; then
+    # Change an explicit override in this environment.
+    enable_flag "$flag"
+  else
+    # A missing overlay key inherits the base, so enable it there.
+    ENV_FILE="$ROOT_DIR/components.env"
+    enable_flag "$flag"
+    ENV_FILE="$ROOT_DIR/environments/$ENV_NAME/components.env"
+  fi
 done
 
 if [ "$APPLY" = "true" ]; then
