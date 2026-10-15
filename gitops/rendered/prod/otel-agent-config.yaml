@@ -1,0 +1,165 @@
+# GENERATED from config/telemetry-policy.yaml and prod Helm values.
+# Review only; the same validated config is embedded in applicationset.yaml.
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/queue
+    create_directory: true
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  resourcedetection:
+    detectors:
+    - env
+    - system
+    system:
+      hostname_sources:
+      - os
+    timeout: 5s
+    override: false
+  redaction:
+    allow_all_keys: true
+    ignored_keys:
+    - gen_ai.usage.input_tokens
+    - gen_ai.usage.output_tokens
+    - gen_ai.request.max_tokens
+    blocked_key_patterns:
+    - (?i).*authorization.*
+    - (?i).*api[_-]?key.*
+    - (?i).*secret.*
+    - (?i).*password.*
+    - (?i).*credential.*
+    - (?i).*(access|auth|bearer|refresh|session|id)[_-]?token.*
+    - (?i)^token$
+    blocked_values:
+    - sk-ant-[A-Za-z0-9_\-]{16,}
+    - sk-[A-Za-z0-9]{20,}
+    - '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
+    - \b(?:\d[ \-]*?){13,16}\b
+    summary: debug
+connectors:
+  spanmetrics:
+    namespace: traces.span.metrics
+    histogram:
+      unit: s
+      explicit:
+        buckets:
+        - 5ms
+        - 10ms
+        - 25ms
+        - 50ms
+        - 100ms
+        - 250ms
+        - 500ms
+        - 1s
+        - 2s
+        - 5s
+        - 10s
+        - 30s
+    dimensions:
+    - name: gen_ai.system
+    - name: gen_ai.request.model
+    - name: gen_ai.operation.name
+    exemplars:
+      enabled: true
+    metrics_flush_interval: 15s
+    metrics_expiration: 5m
+  servicegraph:
+    latency_histogram_buckets:
+    - 100ms
+    - 250ms
+    - 500ms
+    - 1s
+    - 2s
+    - 5s
+    - 10s
+    - 30s
+    store:
+      ttl: 5s
+      max_items: 20000
+exporters:
+  loadbalancing:
+    routing_key: traceID
+    protocol:
+      otlp:
+        tls:
+          ca_file: /etc/otel/tls/ca.crt
+          cert_file: /etc/otel/tls/tls.crt
+          key_file: /etc/otel/tls/tls.key
+          server_name_override: otel-gateway-opentelemetry-collector.otel.svc.cluster.local
+        sending_queue:
+          enabled: true
+          storage: file_storage
+          num_consumers: 10
+          queue_size: 5000
+        retry_on_failure:
+          enabled: true
+    resolver:
+      k8s:
+        service: otel-gateway-opentelemetry-collector.otel
+        ports:
+        - 4317
+  otlphttp/mimir:
+    endpoint: http://mimir-gateway.mimir.svc/otlp
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      num_consumers: 10
+      queue_size: 10000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+service:
+  extensions:
+  - health_check
+  - file_storage
+  telemetry:
+    logs:
+      level: ${env:OBS_COLLECTOR_LOG_LEVEL:-info}
+  pipelines:
+    traces:
+      receivers:
+      - otlp
+      processors:
+      - memory_limiter
+      - k8sattributes
+      - resourcedetection
+      - redaction
+      - batch
+      exporters:
+      - loadbalancing
+      - spanmetrics
+      - servicegraph
+    metrics/derived:
+      receivers:
+      - spanmetrics
+      - servicegraph
+      processors:
+      - memory_limiter
+      - batch
+      exporters:
+      - otlphttp/mimir
+    metrics/otlp:
+      receivers:
+      - otlp
+      processors:
+      - memory_limiter
+      - k8sattributes
+      - resourcedetection
+      - batch
+      exporters:
+      - otlphttp/mimir
+    metrics: null
+    logs: null

@@ -63,12 +63,11 @@ spec:
               ruler: loki
               admin: loki
             s3:
-              endpoint: http://minio.minio.svc:9000
+              endpoint: http://seaweedfs-s3.seaweedfs.svc:8333
               region: us-east-1
-              accessKeyId: loki
-              secretAccessKey: HomelabLokiS3Key123!
-              # MinIO needs path-style addressing; virtual-host style expects
-              # bucket.host DNS that in-cluster MinIO does not serve.
+              accessKeyId: homelab-admin
+              secretAccessKey: HomelabSeaweedAdminKey123!
+              # SeaweedFS S3 uses path-style addressing here.
               s3ForcePathStyle: true
               insecure: true
 

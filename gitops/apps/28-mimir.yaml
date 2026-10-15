@@ -1,4 +1,4 @@
-# Grafana Mimir -- long-term, horizontally scalable metrics storage on MinIO.
+# Grafana Mimir -- long-term, horizontally scalable metrics storage on SeaweedFS.
 #
 # What this does NOT do is replace kube-prometheus-stack. That stack keeps the
 # Prometheus Operator, every ServiceMonitor, kube-state-metrics, node-exporter
@@ -17,7 +17,7 @@
 # second tenant would add ceremony to every read and write and protect nothing.
 #
 # The chart bundles its own MinIO subchart and enables it by default. That is
-# switched off below; we have our own (gitops/apps/12-minio.yaml) with scoped
+# switched off below; we use SeaweedFS with shared homelab credentials.
 # per-backend credentials, and running two would be silently confusing.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -37,8 +37,7 @@ spec:
     helm:
       releaseName: mimir
       values: |
-        # See header. Ours lives in the minio namespace with a scoped `mimir`
-        # user; the bundled one would use root credentials on its own PVC.
+        # SeaweedFS is the platform object store, outside this chart.
         minio:
           enabled: false
 
@@ -90,12 +89,13 @@ spec:
               storage:
                 backend: s3
                 s3:
-                  endpoint: minio.minio.svc:9000
+                  endpoint: seaweedfs-s3.seaweedfs.svc:8333
                   region: us-east-1
                   bucket_name: mimir
-                  access_key_id: mimir
-                  secret_access_key: HomelabMimirS3Key123!
+                  access_key_id: homelab-admin
+                  secret_access_key: HomelabSeaweedAdminKey123!
                   insecure: true
+                  bucket_lookup_type: path
 
             blocks_storage:
               backend: s3

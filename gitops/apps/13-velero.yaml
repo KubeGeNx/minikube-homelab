@@ -30,16 +30,16 @@ spec:
               - mountPath: /target
                 name: plugins
         credentials:
-          existingSecret: velero-minio-credentials
+          existingSecret: velero-seaweedfs-credentials
         configuration:
           backupStorageLocation:
             - name: default
               provider: aws
               bucket: velero-backups
               config:
-                region: minio
+                region: us-east-1
                 s3ForcePathStyle: "true"
-                s3Url: http://minio.minio.svc.cluster.local:9000
+                s3Url: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
           defaultVolumesToFsBackup: true
         snapshotsEnabled: false
         deployNodeAgent: true

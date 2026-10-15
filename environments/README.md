@@ -4,7 +4,8 @@ One environment per cluster. `ENV` selects which directory here is layered on
 top of the repo-root base files:
 
 ```bash
-ENV=prod bash scripts/04-apply-apps.sh     # or: make apply ENV=prod
+make render ENV=prod
+make apply ENV=prod
 ```
 
 ## Layering
@@ -42,7 +43,7 @@ only what you actually need to change.
 ## The environments
 
 - **dev** — minikube. Same components and same topology as prod, scaled to one
-  replica, short retention, in-cluster MinIO standing in for S3. It is a
+  replica, short retention, in-cluster SeaweedFS providing the S3 API. It is a
   *profile* of the production architecture, not a simpler one; if something only
   works in dev, that's a bug in the overlay.
 - **staging** — production topology at reduced scale. The place to prove an
@@ -52,6 +53,7 @@ only what you actually need to change.
 
 ## Rendered output
 
-`gitops/rendered/<env>/applicationset.yaml`, gitignored for `dev` (noisy,
-rebuilt constantly) and committed for `staging`/`prod` so Argo CD can sync them
-from git rather than from whoever last ran a script.
+The resolved plan, collector config snapshots, and
+`gitops/rendered/<env>/applicationset.yaml` are checked in for every
+environment. Apply verifies they match their source files before making any
+cluster changes. Regenerate with `make render ENV=<env>` and review the diff.

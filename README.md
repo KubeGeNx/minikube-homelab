@@ -34,6 +34,7 @@ works as a smoke test (don't expect the full stack to fit).
 | `make <component>` | Install one component **and its dependencies** (see below) |
 | `make apply` | Re-apply current config (safe anytime — only changes what changed) |
 | `make apply ENV=prod` | Same, against a different environment overlay (default `dev`) |
+| `make render ENV=dev` | Regenerate the checked-in plan, collector configs, and ApplicationSet |
 | `make update-versions` | Pin every component to its latest release, then apply |
 | `make tunnel` | `minikube tunnel` for this cluster's profile (keep it running) |
 | `make hosts` | Print the `/etc/hosts` line for the `*.lab.local` URLs |
@@ -45,12 +46,14 @@ works as a smoke test (don't expect the full stack to fit).
 
 ### Installing a single component
 
-Every component has its own target. Dependencies install automatically, even
-if they were disabled:
+Every component has its own target. The platform plan resolves declared
+dependencies and shows their provenance. If a required dependency is explicitly
+disabled, planning stops and names the dependency chain; enable it deliberately
+before applying:
 
 ```bash
-make velero     # also installs minio (its backup target)
-make alloy      # also installs kube-prometheus-stack, loki, mimir
+make velero     # plan includes SeaweedFS when enabled
+make alloy      # plan includes its metrics and log backends
 make kagent     # AI agent framework -- needs an API key first, see below
 make agentgateway  # agentic-traffic gateway (LLM/MCP/A2A + HTTP), see below
 make airflow    # workflow orchestration (DAGs), see below
@@ -58,7 +61,7 @@ make gitlab     # GitLab CE -- heavy! read the GitLab notes first
 make kubeflow   # heavy! read the Kubeflow notes first
 ```
 
-The dependency graph lives in `scripts/enable-component.sh`.
+Install metadata and dependencies live in `config/platform-catalog.yaml`.
 
 ### Uninstalling a component
 
@@ -72,29 +75,40 @@ make apply
 
 ## What's installed
 
+See the [complete platform architecture](docs/architecture.md) for the full
+component catalogue, enabled/optional status, configuration ownership, ingress
+routes, and observability data paths.
+
 | Area | Components | Default |
 |---|---|---|
 | Core | Minikube, CoreDNS, Metrics Server | on |
 | GitOps | Argo CD (owns everything below) | on |
 | Networking | Gateway API, Envoy Gateway (shared TLS Gateway), cert-manager (self-signed CA) | on |
 | Networking | MetalLB (`make metallb`) | off |
-| Secrets | External Secrets Operator | on |
+| Secrets | External Secrets Operator | off |
 | Policy | Kyverno (`make kyverno`), ClusterPolicy admission control | off |
-| Storage | MinIO (S3-compatible object storage — backs Mimir, Loki, Tempo and Velero), hostPath StorageClass, VolumeSnapshot CRDs | on |
+| Storage | SeaweedFS (S3-compatible object storage — backs Mimir, Loki, Tempo and Velero when enabled), hostPath StorageClass, VolumeSnapshot CRDs | on |
 | Observability | Grafana, Alertmanager, Prometheus (scrape + remote-write only), kube-state-metrics, node-exporter, Alloy (infra collector) | on |
-| Observability | **Mimir** (metrics), **Loki 3** (logs), **Tempo distributed** (traces) — all on MinIO object storage | on |
+| Observability | **Mimir** (metrics), **Loki 3** (logs), **Tempo distributed** (traces) — all on SeaweedFS object storage | on |
 | Observability | OpenTelemetry Collector — agent DaemonSet + gateway StatefulSet (`make otel-collector`) | on |
 | Messaging | RabbitMQ (`make rabbitmq`), backs the `examples/dotnet-rabbitmq/` sample | on |
-| Backup | Velero (backs up to MinIO) | on |
+| Backup | Velero (backs up to SeaweedFS) | off |
 | AI agents | kagent (`make kagent`, needs LLM API key) | off |
 | Observability | OpenTelemetry eBPF Instrumentation (`make obi`) — zero-code HTTP/gRPC spans, no SDK required | off |
 | AI gateway | agentgateway (`make agentgateway`) | off |
-| Autoscaling | KEDA (`make keda`), event-driven ScaledObject/ScaledJob autoscaling | off |
-| Autoscaling | VPA (`make vpa`), right-sizes pod CPU/memory requests | off |
+| Autoscaling | KEDA (`make keda`), event-driven ScaledObject/ScaledJob autoscaling | on |
+| Autoscaling | VPA (`make vpa`), right-sizes pod CPU/memory requests | on |
 | Source control & CI | GitLab CE (`make gitlab`, very heavy) + GitLab Runner (`make gitlab-runner`) | off |
 | Workflow orchestration | Apache Airflow (`make airflow`) | off |
-| Operators | OLM / OperatorHub (`make olm`) | off |
+| Operators | OLM / OperatorHub (`make olm`) | on |
 | ML platform | Kubeflow full suite (`make kubeflow`, very heavy) | off |
+
+“On” describes the checked-in root `components.env` and the generated dev
+plan. Environment overlays can change it; use that environment's
+`gitops/rendered/<env>/platform-plan.json` to see its resolved set. The
+catalogue is the inventory of supported components, not a claim that every
+manifest is installed. For the complete inventory and wiring, see the
+[architecture guide](docs/architecture.md).
 
 How the observability pieces fit together. Two collectors, different jobs:
 
@@ -124,9 +138,11 @@ behind it they would count the surviving fraction and silently understate every
 rate in Grafana.
 
 **Storage** is object storage, not PVCs. Mimir, Loki 3, and Tempo distributed
-all keep their blocks in MinIO, each with its own bucket and a credential
-scoped to that bucket. Retention becomes a policy setting rather than a
-disk-size accident, and the read path scales horizontally.
+all keep their blocks in SeaweedFS, each with its own bucket. The current
+SeaweedFS chart configuration uses a shared S3 credential; bucket names
+separate data, but do not provide per-component credential isolation.
+Retention becomes a policy setting rather than a disk-size accident, and the
+read path scales horizontally.
 
 **eBPF, optionally.** `make obi` adds OpenTelemetry eBPF Instrumentation as a
 DaemonSet, giving HTTP/gRPC spans and RED metrics for pods nobody instrumented
@@ -177,7 +193,7 @@ make hosts | head -1 | sudo tee -a /etc/hosts
 | https://argocd.lab.local | `admin` / see below |
 | https://grafana.lab.local | `admin` / password in `gitops/apps/08-kube-prometheus-stack.yaml` |
 | https://prometheus.lab.local | — |
-| https://minio.lab.local | credentials in `gitops/apps/12-minio.yaml` |
+| https://seaweedfs.lab.local | S3 API in `gitops/apps/12-seaweedfs.yaml` |
 | https://tempo.lab.local | — |
 
 Argo CD admin password:
@@ -215,7 +231,7 @@ Four files control everything; each answers one question:
 
 | File | Question it answers | Example |
 |---|---|---|
-| `components.env` | Is this component installed? | `MINIO_ENABLED=true` |
+| `components.env` | Is this component installed? | `SEAWEEDFS_ENABLED=true` |
 | `versions.env` | Which version? | `CERT_MANAGER_VERSION=v1.15.3` |
 | `gitops/apps/<component>.yaml` | Which chart, with what config? | Helm `values:` block |
 | `environments/<env>/` | What differs in *this* environment? | `replicaCount: 1` |
@@ -238,17 +254,23 @@ One environment per cluster. `dev` is a *scaled-down profile of the same
 architecture*, not a simpler one — if something only works in dev, that's a bug
 in the overlay.
 
-After editing any of them, run `make apply`. That regenerates
-`gitops/rendered/<env>/applicationset.yaml` — a single Argo CD `ApplicationSet`
-with one entry per **enabled** component — and applies it. From there Argo CD
+After editing source configuration, run `make render ENV=<env>` and review the
+generated diff, then run `make apply ENV=<env>`. Apply verifies the checked-in
+plan and generated files before making any cluster changes. The typed catalogue
+in `config/platform-catalog.yaml` defines install handlers, dependencies, and
+routes; `gitops/rendered/<env>/platform-plan.json` records requested and
+dependency-enabled entries with provenance. `config/telemetry-policy.yaml`
+checks collector ordering and tenant routing, and the generated tier configs
+are included in the ApplicationSet values. The ApplicationSet contains one
+entry per planned Helm install. From there Argo CD
 does the real work: it diffs the new list against the cluster and creates,
 upgrades, or deletes child `Application`s to match. No bash script ever
 decides to delete your resources; the ApplicationSet's list *is* the desired
 state and Argo CD reconciles to it.
 
-That's also why `make apply` is always safe to re-run: unchanged components
-produce byte-identical specs, so Argo CD touches nothing. Only components
-whose flag, version, or values changed get reconciled.
+If checked-in output is stale, apply stops before cluster mutation and tells
+you to regenerate it. Unchanged inputs produce byte-identical output, so only
+components whose flag, version, or values changed get reconciled.
 
 A few things live outside the ApplicationSet because they don't fit the
 uniform Helm template:
@@ -258,11 +280,74 @@ uniform Helm template:
 - **OLM** — official release manifests, handled by `scripts/06-olm.sh`.
 - **Kubeflow** — a git+kustomize bundle, handled as a standalone Application
   (`gitops/special/16-kubeflow.yaml`).
-- **Glue secrets** — Velero↔MinIO credentials (`scripts/05-velero-secret.sh`)
+- **Glue secrets** — Velero↔SeaweedFS credentials (`scripts/05-velero-secret.sh`)
   and the kagent API key (`scripts/09-kagent-secret.sh`).
 
 All of these are still driven by the same `components.env` flags and run
 automatically inside `make apply`.
+
+## Adding a component
+
+Add a component through the catalogue-driven plan so rendering, dependency
+validation, and Argo CD all agree about its desired state. For a regular Helm
+component:
+
+1. **Add its Helm Application manifest** in `gitops/apps/`, following an
+   existing file. Set `metadata.name`, chart repository/name/version
+   placeholder, destination namespace, sync policy, and a sync wave. Keep
+   production-shaped values in the manifest; put environment-specific sizing
+   or settings in `environments/<env>/values/<component>.yaml`.
+2. **Register it in `config/platform-catalog.yaml`** under `components` with
+   its flag name, `adapter: helm`, manifest path, wave, and every required
+   dependency. Dependencies are resolved transitively; explicitly disabled
+   dependencies cause planning to fail before cluster changes.
+3. **Add the flag and version** to root `components.env` and `versions.env`.
+   Use `environments/<env>/components.env` or `versions.env` only when a
+   particular environment intentionally differs. Keep credentials out of
+   checked-in files; add or document a secret-provisioning handler when the
+   component needs one. Add the flag to an environment overlay when that
+   environment must explicitly enable or disable the new component.
+4. **Add a route only when needed.** Create its HTTPRoute in
+   `gitops/platform/routes/` and register the route file and controlling flag
+   under `routes` in the catalogue. Add its hostname to the `make hosts`
+   output in `Makefile` if users should access it through the shared Gateway.
+5. **Add a per-component Make target.** Add the component to `HELM_COMPONENTS`
+   in `Makefile`; the existing generic target enables the flag and applies the
+   resolved plan. For a grouped feature with multiple Applications sharing one
+   flag, add its user-facing name and flag mapping in
+   `scripts/enable-component.sh` (as with `otel-collector`).
+6. **Render every checked-in environment and review the diff:**
+
+   ```bash
+   for env in dev staging prod; do make render ENV="$env"; done
+   git diff -- gitops/rendered
+   ```
+
+   The planner validates manifest shape, flags, dependencies, versions, and
+   environment overlays. Add a telemetry invariant to
+   `config/telemetry-policy.yaml` and its validator in
+   `scripts/build-applicationset.py` when the new component changes a
+   cross-tier telemetry guarantee.
+7. **Check generated output, then install in dev:**
+
+   ```bash
+   for env in dev staging prod; do make preflight ENV="$env"; done
+   make <component>
+   make status
+   ```
+
+   `make <component>` installs the component and its declared dependencies.
+   Review Argo CD health and workload readiness before promoting the same
+   rendered plan to staging and prod.
+
+For a non-Helm module, choose an adapter already supported by the planner:
+`script` (register its handler and make it consume the resolved plan) or
+`argocd-git` (provide a Git source manifest and namespace). Wire its install,
+uninstall, secrets, and readiness behavior into `scripts/04-apply-apps.sh` as
+needed; special handlers do not get the generic Helm ApplicationSet entry.
+Update the architecture guide's catalogue and diagram, then follow the same
+render, preflight, install, and review steps. Avoid adding a fourth adapter
+without extending plan validation and apply handling deliberately.
 
 <details>
 <summary>More internals: sync waves, legacy files</summary>
@@ -532,7 +617,7 @@ can carry breaking CRD or values changes.
 |---|---|
 | `make hosts`: "Gateway has no address yet" | Tunnel not running (`make tunnel`), or the envoy-gateway Application isn't Healthy — check `make status` |
 | Pods `Pending` on unbound PVCs right after bootstrap | Normal startup race — the storage provisioner binds them within a minute or two |
-| Velero pod: `secret "velero-minio-credentials" not found` | MinIO wasn't ready when the secret step ran — `./scripts/05-velero-secret.sh` (or `make apply`) |
+| Velero pod: `secret "velero-seaweedfs-credentials" not found` | SeaweedFS wasn't ready when the secret step ran — `./scripts/05-velero-secret.sh` (or `make apply`) |
 | Kubeflow `ImagePullBackOff`, "manifest unknown" | Old `KUBEFLOW_VERSION` pinning purged gcr.io images — bump to a recent manifests tag |
 | OLM apply: "conflict ... use --force-conflicts" | Fixed in `scripts/06-olm.sh` (forced server-side apply) — re-run `make apply` |
 | A component's Application stuck `Unknown`/`OutOfSync` | `kubectl -n argocd describe application <name> \| tail -15` shows the real error; a hard refresh helps after fixes: `kubectl -n argocd annotate application <name> argocd.argoproj.io/refresh=hard --overwrite` |

@@ -3,7 +3,7 @@
 # Replaces the monolithic `tempo` chart. The monolith kept blocks on a single
 # 10Gi PVC: no HA, no horizontal read path, and retention capped by disk size.
 # This splits into distributor / ingester / querier / query-frontend /
-# compactor with MinIO underneath, so retention is a policy decision rather
+# compactor with SeaweedFS underneath, so retention is a policy decision rather
 # than a disk-space accident.
 #
 # TWO TENANTS, which is the mechanism behind the content policy:
@@ -57,11 +57,11 @@ spec:
             backend: s3
             s3:
               bucket: tempo
-              endpoint: minio.minio.svc:9000
+              endpoint: seaweedfs-s3.seaweedfs.svc:8333
               region: us-east-1
-              access_key: tempo
-              secret_key: HomelabTempoS3Key123!
-              # In-cluster MinIO speaks plain HTTP; insecure here means "no
+              access_key: homelab-admin
+              secret_key: HomelabSeaweedAdminKey123!
+              # In-cluster SeaweedFS speaks plain HTTP; insecure here means "no
               # TLS on the S3 connection", not "skip verification".
               insecure: true
               forcepathstyle: true

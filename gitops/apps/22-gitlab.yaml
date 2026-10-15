@@ -17,7 +17,7 @@ spec:
       releaseName: gitlab
       values: |
         # HEAVY: this is the full cloud-native GitLab chart (Gitaly,
-        # Webservice, Sidekiq, Registry, Postgres, Redis, MinIO-backed object
+        # Webservice, Sidekiq, Registry, Postgres, Redis, SeaweedFS-backed object
         # storage, KAS, etc.) -- expect 15-20+ pods. Bump
         # MINIKUBE_CPUS/MINIKUBE_MEMORY before enabling, and expect the
         # first sync to take a while to converge.

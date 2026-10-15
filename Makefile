@@ -1,16 +1,15 @@
 # Minikube homelab platform.
 #
 #   make bootstrap          full install (everything enabled in components.env)
-#   make <component>        install one component + its dependencies
+#   make <component>        enable one component and apply its planned dependencies
 #                           (flips the flag in components.env, applies)
 #   make hosts              print/append /etc/hosts entries for *.lab.local
 #   make status             Applications + pods overview
 #   make clean / destroy    teardown (keep / delete the minikube VM)
 #
-# Per-component targets ensure the base platform (minikube, CRDs, Argo CD)
-# exists first, then scripts/enable-component.sh resolves dependencies
-# (e.g. `make velero` also enables minio; `make alloy` pulls in
-# kube-prometheus-stack, loki, mimir) and applies once.
+# Per-component targets update the requested flag and validate the catalogue
+# plan before touching the cluster, then provision the base and apply once.
+# Dependencies are reported; explicitly disabled ones are never auto-enabled.
 .DEFAULT_GOAL := help
 
 # Environment overlay in environments/<env>/, layered over the repo-root
@@ -22,11 +21,11 @@ ENV ?= dev
 export ENV
 
 HELM_COMPONENTS := cert-manager metallb external-secrets envoy-gateway \
-  kube-prometheus-stack loki mimir tempo alloy minio velero kagent agentgateway keda \
+  kube-prometheus-stack loki mimir tempo alloy seaweedfs velero kagent agentgateway keda \
   kyverno vpa gitlab gitlab-runner airflow rabbitmq otel-collector obi
 SPECIAL_COMPONENTS := olm kubeflow
 
-.PHONY: help bootstrap prereqs cluster crds argocd base apply gateway tunnel hosts \
+.PHONY: help bootstrap prereqs cluster crds argocd base render preflight apply gateway tunnel hosts \
   update-versions status clean destroy obs-status obs-level obs-capture \
   $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS)
 
@@ -34,7 +33,8 @@ help:
 	@echo "Targets:"
 	@echo "  bootstrap            full platform install (./bootstrap.sh)"
 	@echo "  base                 minikube + foundational CRDs + Argo CD only"
-	@echo "  apply                rebuild + apply the ApplicationSet as-is"
+	@echo "  render               regenerate checked-in plan, collector configs, and ApplicationSet"
+	@echo "  apply                verify generated files are current, then apply"
 	@echo "  gateway              (re)apply TLS Gateway + HTTPRoutes"
 	@echo "  update-versions      pin every component to its latest release, then apply"
 	@echo "  tunnel               minikube tunnel for the homelab profile"
@@ -42,11 +42,11 @@ help:
 	@echo "  status | clean | destroy"
 	@echo "  obs-status | obs-level LEVEL=debug | obs-capture ON=true TTL=30m"
 	@echo ""
-	@echo "Per-component (installs dependencies automatically):"
+	@echo "Per-component (dependency plan is resolved before apply):"
 	@echo "  $(HELM_COMPONENTS) $(SPECIAL_COMPONENTS)"
 	@echo ""
 	@echo "Environment overlay (environments/<env>/), currently ENV=$(ENV):"
-	@echo "  make apply ENV=prod    render+apply the prod overlay"
+	@echo "  make render ENV=prod && make apply ENV=prod"
 	@echo "  see environments/README.md for the layering rules"
 
 bootstrap:
@@ -55,8 +55,10 @@ bootstrap:
 # Refreshes versions.env to the latest non-prerelease version of every
 # component (queries the official Helm repos / GitHub releases), then
 # rebuilds + applies so Argo CD rolls the upgrades out.
-update-versions: base
+update-versions:
 	./update-versions.sh
+	bash scripts/build-applicationset.sh
+	$(MAKE) base
 	bash scripts/04-apply-apps.sh
 
 prereqs:
@@ -73,17 +75,23 @@ argocd: crds
 
 base: argocd
 
-apply: base
+render:
+	bash scripts/build-applicationset.sh
+
+preflight:
+	bash scripts/build-applicationset.sh --check
+
+apply: preflight base
 	bash scripts/04-apply-apps.sh
 
-gateway: base
+gateway: preflight base
 	bash scripts/08-platform-gateway.sh
 
-$(HELM_COMPONENTS): base
-	bash scripts/enable-component.sh $@
-
-$(SPECIAL_COMPONENTS): base
-	bash scripts/enable-component.sh $@
+$(HELM_COMPONENTS) $(SPECIAL_COMPONENTS):
+	bash scripts/enable-component.sh --no-apply $@
+	bash scripts/build-applicationset.sh
+	$(MAKE) base
+	bash scripts/04-apply-apps.sh
 
 # minikube commands default to the "minikube" profile; this cluster is "homelab".
 tunnel:
@@ -94,7 +102,7 @@ hosts:
 	if [ -z "$$GATEWAY_IP" ]; then \
 	  echo "Gateway has no address yet. With the docker driver, run 'minikube tunnel' first."; exit 1; \
 	fi; \
-	echo "$$GATEWAY_IP argocd.lab.local grafana.lab.local prometheus.lab.local minio.lab.local tempo.lab.local rabbitmq.lab.local"; \
+	echo "$$GATEWAY_IP argocd.lab.local grafana.lab.local prometheus.lab.local seaweedfs.lab.local tempo.lab.local rabbitmq.lab.local"; \
 	echo ""; \
 	echo "Append it with:"; \
 	echo "  make hosts | head -1 | sudo tee -a /etc/hosts"

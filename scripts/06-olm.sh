@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # Installs/uninstalls Operator Lifecycle Manager (OLM). Not Helm-packaged,
-# so like Kubeflow it lives outside the ApplicationSet -- called by
-# scripts/04-apply-apps.sh based on OLM_ENABLED in components.env.
+# so it lives outside the ApplicationSet -- selected by the resolved catalogue
+# plan and called by scripts/04-apply-apps.sh.
 # Usage: 06-olm.sh install|uninstall
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-# shellcheck disable=SC1091
-source "$ROOT_DIR/versions.env"
+ENV="${ENV:-dev}"
+PLAN_FILE="$ROOT_DIR/gitops/rendered/$ENV/platform-plan.json"
+if [ ! -f "$PLAN_FILE" ]; then
+  echo "ERROR: platform plan missing for ENV=$ENV. Run scripts/build-applicationset.sh first." >&2
+  exit 1
+fi
+OLM_VERSION="$(jq -r '.versions.OLM_VERSION // empty' "$PLAN_FILE")"
+[ -n "$OLM_VERSION" ] || { echo "ERROR: OLM_VERSION missing from resolved plan." >&2; exit 1; }
 
 BASE="https://github.com/operator-framework/operator-lifecycle-manager/releases/download/${OLM_VERSION}"
 ACTION="${1:-install}"

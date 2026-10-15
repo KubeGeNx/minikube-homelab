@@ -110,8 +110,8 @@ cmd_install() {
   local ns
   for ns in $(existing_namespaces); do
     [ "$ns" = "otel" ] && continue
-    kubectl -n otel get configmap "$CM" -o yaml \
-      | sed "s/^  namespace: otel$/  namespace: $ns/" \
+    kubectl -n otel get configmap "$CM" -o json \
+      | jq --arg namespace "$ns" 'del(.metadata.creationTimestamp, .metadata.resourceVersion, .metadata.uid, .metadata.managedFields, .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]) | .metadata.namespace = $namespace' \
       | kubectl apply -f - >/dev/null
     echo "  replicated $CM into $ns"
   done

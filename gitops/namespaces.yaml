@@ -59,7 +59,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: minio
+  name: seaweedfs
 ---
 apiVersion: v1
 kind: Namespace

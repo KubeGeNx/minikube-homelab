@@ -23,37 +23,17 @@ if [ ! -d "$ROOT_DIR/environments/$ENV" ]; then
   exit 1
 fi
 APPLICATIONSET_FILE="$ROOT_DIR/gitops/rendered/$ENV/applicationset.yaml"
+PLAN_FILE="$ROOT_DIR/gitops/rendered/$ENV/platform-plan.json"
 
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/lib-components.sh"
-# Base first, then the environment overlay on top -- same layering
-# build-applicationset.py does, so this script's enabled/disabled decisions
-# (namespaces, HTTPRoutes, kubeflow) agree with what actually got rendered.
-set -a
-# shellcheck disable=SC1090
-source "$ROOT_DIR/components.env"
-# shellcheck disable=SC1090
-source "$ROOT_DIR/versions.env"
-if [ -f "$ROOT_DIR/environments/$ENV/components.env" ]; then
-  # shellcheck disable=SC1090
-  source "$ROOT_DIR/environments/$ENV/components.env"
-fi
-if [ -f "$ROOT_DIR/environments/$ENV/versions.env" ]; then
-  # shellcheck disable=SC1090
-  source "$ROOT_DIR/environments/$ENV/versions.env"
-fi
-set +a
+# Refuse stale generated artifacts before the first cluster mutation. Update
+# them deliberately with `ENV=... bash scripts/build-applicationset.sh`.
+bash "$SCRIPT_DIR/build-applicationset.sh" --check
+plan_enabled() { jq -e --arg id "$1" '.enabled | index($id) != null' "$PLAN_FILE" >/dev/null; }
 
 echo "Applying namespaces for enabled components only..."
 echo "(gitops/namespaces.yaml lists every namespace this platform *could* use --"
 echo " that's a reference for cleanup.sh, not something applied wholesale here)"
-enabled_namespaces=""
-while IFS='|' read -r app enabled_var file wave; do
-  [ -z "$app" ] && continue
-  is_component_enabled "$enabled_var" || continue
-  ns="$(awk '/^  destination:/{f=1;next} f && /namespace:/{print $2; exit}' "$ROOT_DIR/gitops/apps/$file")"
-  [ -n "$ns" ] && enabled_namespaces="$enabled_namespaces $ns"
-done <<< "$COMPONENT_TABLE"
+enabled_namespaces="$(jq -r '.namespaces[]' "$PLAN_FILE" | sort -u)"
 # dedupe in case multiple components share a namespace
 enabled_namespaces="$(printf '%s\n' $enabled_namespaces | sort -u)"
 for ns in $enabled_namespaces; do
@@ -101,8 +81,12 @@ kubectl apply -f "$APPLICATIONSET_FILE"
 # certificates never gets to run. It does NOT resolve itself.
 #
 # Only needs cert-manager's CRDs, which is why it can run this early.
-if is_component_enabled "OTEL_COLLECTOR_ENABLED" && is_component_enabled "CERT_MANAGER_ENABLED"; then
+if plan_enabled otel-agent && plan_enabled cert-manager; then
   if kubectl get crd certificates.cert-manager.io >/dev/null 2>&1; then
+    echo "Preparing the homelab CA before issuing collector certificates..."
+    kubectl apply -f "$ROOT_DIR/gitops/platform/cluster-issuers.yaml"
+    kubectl -n cert-manager wait --for=condition=Ready certificate/homelab-root-ca --timeout=180s
+    kubectl wait --for=condition=Ready clusterissuer/homelab-ca --timeout=60s
     echo "Applying OpenTelemetry collector mTLS Certificates (otel namespace)..."
     kubectl create namespace otel --dry-run=client -o yaml | kubectl apply -f - >/dev/null
     kubectl apply -f "$ROOT_DIR/gitops/platform/otel-mtls.yaml"
@@ -112,19 +96,22 @@ if is_component_enabled "OTEL_COLLECTOR_ENABLED" && is_component_enabled "CERT_M
   fi
 fi
 
-# --- Special (non-Helm) components ---
-# Kubeflow doesn't fit the ApplicationSet's Helm-chart template (it's a
-# git+kustomize bundle), so it's not in scripts/lib-components.sh's
-# COMPONENT_TABLE and build-applicationset.py never sees it. Handle it here
-# directly: render its ${KUBEFLOW_VERSION} placeholder and apply/delete its
-# standalone Application based on KUBEFLOW_ENABLED, same enable/disable
-# contract as everything else in components.env.
+# --- Special install handlers selected by the catalogue plan ---
+# Kubeflow uses Argo CD's git source; its existing script renders and applies
+# the manifest using version and enablement from the shared plan.
 echo ""
 echo "--- Special (non-Helm) components ---"
 mkdir -p "$ROOT_DIR/gitops/rendered"
-if is_component_enabled "KUBEFLOW_ENABLED"; then
-  echo "Kubeflow enabled -- rendering and applying gitops/special/16-kubeflow.yaml..."
-  envsubst '$KUBEFLOW_VERSION' < "$ROOT_DIR/gitops/special/16-kubeflow.yaml" > "$ROOT_DIR/gitops/rendered/16-kubeflow.yaml"
+if plan_enabled kubeflow; then
+  KUBEFLOW_ADAPTER="$(jq -r '.entries.kubeflow.adapter' "$PLAN_FILE")"
+  KUBEFLOW_MANIFEST="$(jq -r '.entries.kubeflow.manifest' "$PLAN_FILE")"
+  KUBEFLOW_VERSION_KEY="$(jq -r '.entries.kubeflow.version' "$PLAN_FILE")"
+  [ "$KUBEFLOW_ADAPTER" = "argocd-git" ] || { echo "ERROR: unsupported Kubeflow adapter '$KUBEFLOW_ADAPTER'" >&2; exit 1; }
+  KUBEFLOW_VERSION="$(jq -r --arg key "$KUBEFLOW_VERSION_KEY" '.versions[$key]' "$PLAN_FILE")"
+  [ -n "$KUBEFLOW_VERSION" ] && [ "$KUBEFLOW_VERSION" != "null" ] || { echo "ERROR: $KUBEFLOW_VERSION_KEY missing from plan" >&2; exit 1; }
+  echo "Kubeflow enabled -- rendering and applying $KUBEFLOW_MANIFEST..."
+  export KUBEFLOW_VERSION
+  envsubst "\${$KUBEFLOW_VERSION_KEY}" < "$ROOT_DIR/$KUBEFLOW_MANIFEST" > "$ROOT_DIR/gitops/rendered/16-kubeflow.yaml"
   kubectl apply -f "$ROOT_DIR/gitops/rendered/16-kubeflow.yaml"
   echo "Kubeflow's own manifests typically need several sync passes to fully"
   echo "converge (see the comments in gitops/special/16-kubeflow.yaml) -- this"
@@ -141,9 +128,10 @@ else
 fi
 
 # OLM: official release manifests, not Helm (see scripts/06-olm.sh).
-if is_component_enabled "OLM_ENABLED"; then
+if plan_enabled olm; then
   echo "OLM enabled -- installing/verifying (scripts/06-olm.sh)..."
-  bash "$SCRIPT_DIR/06-olm.sh" install
+  OLM_HANDLER="$(jq -r '.entries.olm.handler' "$PLAN_FILE")"
+  bash "$ROOT_DIR/$OLM_HANDLER" install
 else
   if kubectl get namespace olm >/dev/null 2>&1; then
     echo "OLM disabled but still installed -- uninstalling (scripts/06-olm.sh)..."
@@ -166,13 +154,7 @@ fi
 # "${names[@]}" under set -u aborts with "unbound variable" on macOS's
 # default bash 3.2 (fixed in bash 4.4), and "no enabled Helm components"
 # is a legal state here (e.g. everything off except Kubeflow).
-names=""
-while IFS='|' read -r app enabled_var file wave; do
-  [ -z "$app" ] && continue
-  if is_component_enabled "$enabled_var"; then
-    names="$names $app"
-  fi
-done <<< "$COMPONENT_TABLE"
+names="$(jq -r '.enabled[] as $id | select(.entries[$id].adapter == "helm") | $id' "$PLAN_FILE")"
 
 wait_healthy() {
   local name="$1" timeout="${2:-300}" elapsed=0
@@ -203,7 +185,7 @@ done
 # --- MetalLB address pool ---
 # The pool CRs need MetalLB's CRDs + webhook, so this runs after the
 # wait_healthy loop confirmed the metallb Application is up.
-if is_component_enabled "METALLB_ENABLED"; then
+if plan_enabled metallb; then
   echo ""
   echo "--- Configuring MetalLB address pool (scripts/07-metallb-config.sh) ---"
   bash "$SCRIPT_DIR/07-metallb-config.sh" || \
@@ -213,7 +195,7 @@ fi
 # --- Gateway API exposure + TLS (*.lab.local) ---
 # Needs cert-manager's CRDs (ClusterIssuer/Certificate) and the Envoy
 # Gateway controller, both confirmed Healthy above.
-if is_component_enabled "ENVOY_GATEWAY_ENABLED" && is_component_enabled "CERT_MANAGER_ENABLED"; then
+if plan_enabled envoy-gateway && plan_enabled cert-manager; then
   echo ""
   echo "--- Applying platform Gateway + TLS + HTTPRoutes (scripts/08-platform-gateway.sh) ---"
   bash "$SCRIPT_DIR/08-platform-gateway.sh"
@@ -222,7 +204,7 @@ fi
 # --- Observability verbosity control (ConfigMap + RBAC + expiry CronJob) ---
 # Installs the DEFAULTS only; it never overwrites a live value, so re-running
 # this script does not silently disable a capture window someone opened.
-if is_component_enabled "OTEL_COLLECTOR_ENABLED"; then
+if plan_enabled otel-agent; then
   echo ""
   echo "--- Observability level control (scripts/12-observability-level.sh) ---"
   bash "$SCRIPT_DIR/12-observability-level.sh" install ||     echo "  WARNING: level control not installed -- re-run scripts/12-observability-level.sh install"
@@ -233,7 +215,7 @@ fi
 # over OTLP and Prometheus never sees them, so a PrometheusRule would evaluate
 # an empty series set and stay green forever. The CronJob in the manifest syncs
 # them from a ConfigMap every 15 minutes.
-if is_component_enabled "MIMIR_ENABLED"; then
+if plan_enabled mimir; then
   echo ""
   echo "--- AI governance rules (Mimir ruler) ---"
   kubectl apply -f "$ROOT_DIR/gitops/platform/ai-governance-rules.yaml"
@@ -247,31 +229,31 @@ echo ""
 echo "All Applications (owned by the 'platform' ApplicationSet):"
 kubectl get applications -n argocd -l 'platform-wave' 2>/dev/null || kubectl get applications -n argocd
 
-# --- Velero <-> MinIO credential wiring ---
+# --- Velero <-> SeaweedFS credential wiring ---
 # Velero's Application (gitops/apps/13-velero.yaml) mounts a secret named
-# "velero-minio-credentials" that nothing creates automatically -- Argo CD
+# "velero-seaweedfs-credentials" that nothing creates automatically -- Argo CD
 # can't generate credentials on its own. Without it, Velero's pods sit in
 # ContainerCreating/PodInitializing forever with a FailedMount event
 # ("secret ... not found"). This has to run down here, AFTER the
 # wait_healthy loop above -- kubectl wait only blocks on pods that already
 # exist, it doesn't wait for a pod to be *created*, so running this straight
 # after `kubectl apply` on the ApplicationSet (before Argo CD has even
-# created MinIO's child Application, let alone scheduled its pod) fails
-# fast with nothing to wait on. By this point MinIO's Application has been
+# created SeaweedFS's child Application, let alone scheduled its pod) fails
+# fast with nothing to wait on. By this point SeaweedFS's Application has been
 # confirmed Healthy, so its pod genuinely exists and is Ready.
-if is_component_enabled "VELERO_ENABLED" && is_component_enabled "MINIO_ENABLED"; then
-  if kubectl -n velero get secret velero-minio-credentials >/dev/null 2>&1; then
+if plan_enabled velero && plan_enabled seaweedfs; then
+  if kubectl -n velero get secret velero-seaweedfs-credentials >/dev/null 2>&1; then
     echo ""
-    echo "Velero's MinIO credentials secret already exists, skipping."
+    echo "Velero's SeaweedFS credentials secret already exists, skipping."
   else
     echo ""
-    echo "--- Wiring Velero's MinIO credentials (scripts/05-velero-secret.sh) ---"
-    if kubectl -n argocd get application minio -o jsonpath='{.status.health.status}' 2>/dev/null | grep -q Healthy; then
+    echo "--- Wiring Velero's SeaweedFS credentials (scripts/05-velero-secret.sh) ---"
+    if kubectl -n argocd get application seaweedfs -o jsonpath='{.status.health.status}' 2>/dev/null | grep -q Healthy; then
       bash "$SCRIPT_DIR/05-velero-secret.sh" || \
-        echo "  WARNING: couldn't create the secret (see errors above) -- re-run ./scripts/04-apply-apps.sh once 'kubectl -n minio get pods' shows it Running."
+        echo "  WARNING: couldn't create the secret (see errors above) -- re-run ./scripts/04-apply-apps.sh once 'kubectl -n seaweedfs get pods' shows it Running."
     else
-      echo "  MinIO's Application isn't Healthy yet -- skipping for now."
-      echo "  Once 'kubectl -n minio get pods' shows it Running, re-run ./scripts/04-apply-apps.sh (or just ./scripts/05-velero-secret.sh) to create the secret."
+      echo "  SeaweedFS's Application isn't Healthy yet -- skipping for now."
+      echo "  Once 'kubectl -n seaweedfs get pods' shows it Running, re-run ./scripts/04-apply-apps.sh (or just ./scripts/05-velero-secret.sh) to create the secret."
     fi
   fi
 fi

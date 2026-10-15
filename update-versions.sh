@@ -49,7 +49,7 @@ MIMIR_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|mimir-dis
 ALLOY_CHART_VERSION|helm|grafana|https://grafana.github.io/helm-charts|alloy
 OTEL_COLLECTOR_CHART_VERSION|helm|open-telemetry|https://open-telemetry.github.io/opentelemetry-helm-charts|opentelemetry-collector
 OBI_CHART_VERSION|helm|open-telemetry|https://open-telemetry.github.io/opentelemetry-helm-charts|opentelemetry-ebpf-instrumentation
-MINIO_CHART_VERSION|helm|minio|https://charts.min.io/|minio
+SEAWEEDFS_CHART_VERSION|helm|seaweedfs|https://seaweedfs.github.io/seaweedfs/helm|seaweedfs
 VELERO_VERSION|helm|vmware-tanzu|https://vmware-tanzu.github.io/helm-charts|velero
 ARGOCD_CHART_VERSION|helm|argo|https://argoproj.github.io/argo-helm|argo-cd
 GITLAB_VERSION|helm|gitlab|https://charts.gitlab.io/|gitlab

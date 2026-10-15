@@ -7,6 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+echo "=== [0/5] Validating checked-in platform plan and generated configuration ==="
+bash scripts/build-applicationset.sh --check
+
 echo "=== [1/5] Checking prerequisites ==="
 bash scripts/00-prereqs.sh
 
@@ -42,12 +45,12 @@ cat <<'EOF'
  Then wire up *.lab.local hostnames and open the UIs over TLS:
    make hosts        # prints the /etc/hosts line
    https://argocd.lab.local      https://grafana.lab.local
-   https://prometheus.lab.local  https://minio.lab.local
+   https://prometheus.lab.local  https://seaweedfs.lab.local
    https://tempo.lab.local
 
- Install individual components (deps resolved automatically):
-   make velero       # also installs minio
-   make alloy        # also installs kube-prometheus-stack, loki, tempo
+ Install individual components (dependencies shown in the resolved plan):
+   make velero
+   make alloy
 
  See README.md for the full component list, sync-wave order,
  and optional add-ons (MetalLB, OLM, Kubeflow, Cilium CNI).

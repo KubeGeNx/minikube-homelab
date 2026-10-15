@@ -1,47 +1,20 @@
 #!/usr/bin/env bash
-# Shared component registry, sourced by scripts/build-applicationset.sh and
-# scripts/04-apply-apps.sh so they always agree on which Argo CD Application
-# maps to which components.env flag and which sync wave.
-#
-# Columns: APP_NAME|ENABLED_VAR|FILE|WAVE
-COMPONENT_TABLE='
-cert-manager|CERT_MANAGER_ENABLED|01-cert-manager.yaml|1
-metallb|METALLB_ENABLED|02-metallb.yaml|1
-external-secrets|EXTERNAL_SECRETS_ENABLED|03-external-secrets.yaml|1
-kyverno|KYVERNO_ENABLED|20-kyverno.yaml|1
-envoy-gateway|ENVOY_GATEWAY_ENABLED|06-envoy-gateway.yaml|2
-kube-prometheus-stack|KUBE_PROMETHEUS_STACK_ENABLED|08-kube-prometheus-stack.yaml|2
-tempo|TEMPO_ENABLED|04-tempo.yaml|3
-alloy|ALLOY_ENABLED|05-alloy.yaml|4
-loki|LOKI_ENABLED|11-loki.yaml|3
-mimir|MIMIR_ENABLED|28-mimir.yaml|3
-minio|MINIO_ENABLED|12-minio.yaml|3
-velero|VELERO_ENABLED|13-velero.yaml|4
-kagent-crds|KAGENT_ENABLED|14-kagent-crds.yaml|1
-kagent|KAGENT_ENABLED|15-kagent.yaml|2
-agentgateway-crds|AGENTGATEWAY_ENABLED|17-agentgateway-crds.yaml|1
-agentgateway|AGENTGATEWAY_ENABLED|18-agentgateway.yaml|2
-keda|KEDA_ENABLED|19-keda.yaml|2
-vpa|VPA_ENABLED|21-vpa.yaml|2
-gitlab|GITLAB_ENABLED|22-gitlab.yaml|1
-gitlab-runner|GITLAB_RUNNER_ENABLED|23-gitlab-runner.yaml|2
-airflow|AIRFLOW_ENABLED|24-airflow.yaml|2
-rabbitmq|RABBITMQ_ENABLED|25-rabbitmq.yaml|2
-otel-gateway|OTEL_COLLECTOR_ENABLED|27-otel-gateway.yaml|4
-otel-agent|OTEL_COLLECTOR_ENABLED|26-otel-agent.yaml|5
-obi|OBI_ENABLED|29-obi.yaml|5
-'
+# Compatibility view for older shell callers. The typed YAML catalogue is the
+# source of truth; this table is generated at source time for Helm-only loops.
+LIB_COMPONENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_COMPONENTS_ROOT="$(dirname "$LIB_COMPONENTS_DIR")"
+COMPONENT_TABLE="$(python3 - "$LIB_COMPONENTS_ROOT/config/platform-catalog.yaml" <<'PY'
+import sys, yaml, os
+with open(sys.argv[1]) as f:
+    entries = yaml.safe_load(f)["components"]
+for name, item in entries.items():
+    if item["adapter"] == "helm":
+        print("|".join((name, item["flag"], os.path.basename(item["manifest"]), str(item["wave"]))))
+PY
+)"
 
-# Kubeflow and OLM are NOT in COMPONENT_TABLE above: it installs via a git+kustomize
-# bundle (kubeflow/manifests), not a Helm chart, so it doesn't fit the
-# uniform Helm template scripts/build-applicationset.py generates from this
-# table. It lives as its own standalone Application manifest in
-# gitops/special/16-kubeflow.yaml, applied/pruned directly by
-# scripts/04-apply-apps.sh based on KUBEFLOW_ENABLED -- see that script and
-# gitops/special/16-kubeflow.yaml for details.
-
-# Usage: is_component_enabled "$var_name"
-# Defaults to enabled if the flag is missing from components.env entirely.
+# Usage: is_component_enabled "$var_name". Missing flags retain the historic
+# default-on behavior; environment overlays are resolved by the Python planner.
 is_component_enabled() {
   local var="$1"
   local val="${!var:-true}"
